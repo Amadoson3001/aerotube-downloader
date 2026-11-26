@@ -13,6 +13,7 @@ import '../core/utils/downloaded_file_finder.dart';
 import '../core/utils/error_helper.dart';
 import '../models/download_item.dart';
 import '../models/download_mode.dart';
+import 'download_utils.dart';
 import '../providers/platform_settings_provider.dart';
 import '../services/core/android_storage_service.dart';
 import '../services/cookie/cookie_service.dart';
@@ -162,21 +163,24 @@ class MobileDownloadProvider extends ChangeNotifier
   List<DownloadItem> get activeDownloads {
     if (_activeDirty || _cachedActiveDownloads == null) {
       _cachedActiveDownloads = List.unmodifiable(
-        _downloads
-            .where(
-              (d) =>
-                  d.status == DownloadStatus.downloadingVideo ||
-                  d.status == DownloadStatus.downloadingAudio ||
-                  d.status == DownloadStatus.merging ||
-                  d.status == DownloadStatus.pending ||
-                  d.status == DownloadStatus.queued ||
-                  d.status == DownloadStatus.paused,
-            )
-            .toList(),
+        _downloads.where((d) => isActiveDownloadStatus(d.status)).toList(),
       );
       _activeDirty = false;
     }
     return _cachedActiveDownloads!;
+  }
+
+  /// Ordered list of active download IDs for targeted list-slot subscriptions.
+  List<String> get activeDownloadIds =>
+      activeDownloads.map((d) => d.id).toList(growable: false);
+
+  /// Look up a single active download by [id] so card widgets can subscribe
+  /// only to their own item updates.
+  DownloadItem? activeDownloadById(String id) {
+    for (final d in activeDownloads) {
+      if (d.id == id) return d;
+    }
+    return null;
   }
 
   List<DownloadItem> get completedDownloads {
@@ -212,7 +216,7 @@ class MobileDownloadProvider extends ChangeNotifier
   List<DownloadItem> get historyDownloads {
     if (_historyDirty || _cachedHistoryDownloads == null) {
       _cachedHistoryDownloads = List.unmodifiable(
-        _downloads.where((d) => _isTerminalStatus(d.status)).toList(),
+        _downloads.where((d) => isTerminalDownloadStatus(d.status)).toList(),
       );
       _historyDirty = false;
     }
@@ -223,12 +227,7 @@ class MobileDownloadProvider extends ChangeNotifier
   int get maxConcurrentDownloads => _maxConcurrentDownloads;
   int get activeDownloadsCount => activeDownloads.length;
   int get runningDownloadsCount => _downloads
-      .where(
-        (d) =>
-            d.status == DownloadStatus.downloadingVideo ||
-            d.status == DownloadStatus.downloadingAudio ||
-            d.status == DownloadStatus.merging,
-      )
+      .where((d) => isRunningDownloadStatus(d.status))
       .length;
 
   Future<void> initialize() async {
@@ -342,9 +341,7 @@ class MobileDownloadProvider extends ChangeNotifier
             }
           }
           entries.sort(
-            (a, b) => (a.value.completedDate ?? DateTime(1970)).compareTo(
-              b.value.completedDate ?? DateTime(1970),
-            ),
+            (a, b) => compareHistoryOldestFirst(a.value, b.value),
           );
           final excess = entries.length - 200;
           for (int i = 0; i < excess; i++) {
@@ -390,11 +387,7 @@ class MobileDownloadProvider extends ChangeNotifier
             } catch (_) {}
           }
         }
-        persistedHistory.sort(
-          (a, b) => (b.completedDate ?? DateTime(1970)).compareTo(
-            a.completedDate ?? DateTime(1970),
-          ),
-        );
+        persistedHistory.sort(compareHistoryNewestFirst);
       } catch (e, stackTrace) {
         // Box-level corruption when reading keys/values.
         LoggingService().warning(
@@ -1927,11 +1920,8 @@ class MobileDownloadProvider extends ChangeNotifier
     return ErrorHelper.formatDownloadError(error);
   }
 
-  bool _isTerminalStatus(DownloadStatus status) {
-    return status == DownloadStatus.completed ||
-        status == DownloadStatus.failed ||
-        status == DownloadStatus.cancelled;
-  }
+  bool _isTerminalStatus(DownloadStatus status) =>
+      isTerminalDownloadStatus(status);
 
   /// True when a start that is still in flight should not enqueue yt-dlp.
   bool _downloadStartWasAbandoned(String downloadId) {

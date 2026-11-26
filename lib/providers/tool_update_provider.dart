@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../services/ffmpeg/ffmpeg_tool_service.dart';
 import '../services/ytdlp/ytdlp_tool_service.dart';
 import '../services/core/logging_service.dart';
+import '../services/core/fetch_priority.dart';
 import '../core/constants/app_constants.dart';
 import '../core/utils/platform_utils.dart';
 import '../core/utils/version_utils.dart';
@@ -143,10 +144,13 @@ class ToolUpdateProvider extends ChangeNotifier {
       await installYtdlp();
     }
 
-    // Auto-check for updates if enabled - defer to after app is interactive.
-    // 3s is enough for the first frame; force so we always see the newest.
+    // Auto-check for updates if enabled - defer to after app is interactive
+    // and yield to any active interactive metadata fetch.
     if (autoCheckEnabled) {
-      Future.delayed(const Duration(seconds: 3), () {
+      Future.delayed(const Duration(seconds: 3), () async {
+        if (_isDisposed) return;
+        await FetchPriority.waitForIdle();
+        if (_isDisposed) return;
         unawaited(
           checkAllForUpdates(force: true).catchError((Object e, StackTrace st) {
             _logger.warning(

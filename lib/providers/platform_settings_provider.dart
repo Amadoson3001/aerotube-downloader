@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -37,6 +38,52 @@ class PlatformSettingsProvider extends ChangeNotifier {
   bool _isBatteryOptimizationIgnored = false;
   bool _isCheckingBatteryOptimization = false;
   String? _deviceManufacturer;
+  Future<void> _persistChain = Future<void>.value();
+  final Map<String, int> _fieldWriteGen = {};
+  String? _lastSettingsError;
+
+  String? get lastSettingsError => _lastSettingsError;
+
+  Future<void> _runOrderedPersist({
+    required String fieldKey,
+    required AppSettings optimistic,
+    required Future<void> Function() persist,
+    required AppSettings Function(AppSettings current) rollbackField,
+    VoidCallback? onApplied,
+    VoidCallback? onRollback,
+  }) {
+    final gen = (_fieldWriteGen[fieldKey] ?? 0) + 1;
+    _fieldWriteGen[fieldKey] = gen;
+    _lastSettingsError = null;
+    _settingsService.applyInMemory(optimistic);
+    onApplied?.call();
+    notifyListeners();
+
+    final completer = Completer<void>();
+    _persistChain = _persistChain.then((_) async {
+      try {
+        await persist();
+        if (!completer.isCompleted) completer.complete();
+      } catch (e, st) {
+        LoggingService().error(
+          'Failed to persist setting: $e',
+          component: 'PlatformSettingsProvider',
+          error: e,
+          stackTrace: st,
+        );
+        _lastSettingsError = e.toString();
+        if (_fieldWriteGen[fieldKey] == gen) {
+          _settingsService.applyInMemory(
+            rollbackField(_settingsService.settings),
+          );
+          onRollback?.call();
+        }
+        notifyListeners();
+        if (!completer.isCompleted) completer.completeError(e, st);
+      }
+    });
+    return completer.future;
+  }
 
   PlatformSettingsProvider({
     required SettingsService settingsService,
@@ -445,14 +492,25 @@ class PlatformSettingsProvider extends ChangeNotifier {
     }
   }
 
-  Future<void> setThemeMode(ThemeMode mode) async {
-    await _settingsService.setThemeMode(mode);
-    notifyListeners();
+  Future<void> setThemeMode(ThemeMode mode) {
+    final prev = settings.themeMode;
+    return _runOrderedPersist(
+      fieldKey: 'themeMode',
+      optimistic: settings.copyWith(themeMode: mode),
+      persist: () => _settingsService.setThemeMode(mode, updateInMemory: false),
+      rollbackField: (c) => c.copyWith(themeMode: prev),
+    );
   }
 
-  Future<void> setAmoledDark(bool value) async {
-    await _settingsService.setAmoledDark(value);
-    notifyListeners();
+  Future<void> setAmoledDark(bool value) {
+    final prev = settings.amoledDark;
+    return _runOrderedPersist(
+      fieldKey: 'amoledDark',
+      optimistic: settings.copyWith(amoledDark: value),
+      persist: () =>
+          _settingsService.setAmoledDark(value, updateInMemory: false),
+      rollbackField: (c) => c.copyWith(amoledDark: prev),
+    );
   }
 
   Future<void> setYtdlpPath(String? path) async {
@@ -527,25 +585,50 @@ class PlatformSettingsProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> setDefaultQuality(String quality) async {
-    await _settingsService.setDefaultQuality(quality);
-    notifyListeners();
+  Future<void> setDefaultQuality(String quality) {
+    final prev = settings.defaultQuality;
+    return _runOrderedPersist(
+      fieldKey: 'defaultQuality',
+      optimistic: settings.copyWith(defaultQuality: quality),
+      persist: () =>
+          _settingsService.setDefaultQuality(quality, updateInMemory: false),
+      rollbackField: (c) => c.copyWith(defaultQuality: prev),
+    );
   }
 
-  Future<void> setEmbedThumbnail(bool value) async {
-    await _settingsService.setEmbedThumbnail(value);
-    notifyListeners();
+  Future<void> setEmbedThumbnail(bool value) {
+    final prev = settings.embedThumbnail;
+    return _runOrderedPersist(
+      fieldKey: 'embedThumbnail',
+      optimistic: settings.copyWith(embedThumbnail: value),
+      persist: () =>
+          _settingsService.setEmbedThumbnail(value, updateInMemory: false),
+      rollbackField: (c) => c.copyWith(embedThumbnail: prev),
+    );
   }
 
-  Future<void> setEmbedMetadata(bool value) async {
-    await _settingsService.setEmbedMetadata(value);
-    notifyListeners();
+  Future<void> setEmbedMetadata(bool value) {
+    final prev = settings.embedMetadata;
+    return _runOrderedPersist(
+      fieldKey: 'embedMetadata',
+      optimistic: settings.copyWith(embedMetadata: value),
+      persist: () =>
+          _settingsService.setEmbedMetadata(value, updateInMemory: false),
+      rollbackField: (c) => c.copyWith(embedMetadata: prev),
+    );
   }
 
-  Future<void> setEnableCookies(bool value) async {
-    await _settingsService.setEnableCookies(value);
-    _ytdlpService.enableCookies = value;
-    notifyListeners();
+  Future<void> setEnableCookies(bool value) {
+    final prev = settings.enableCookies;
+    return _runOrderedPersist(
+      fieldKey: 'enableCookies',
+      optimistic: settings.copyWith(enableCookies: value),
+      persist: () =>
+          _settingsService.setEnableCookies(value, updateInMemory: false),
+      rollbackField: (c) => c.copyWith(enableCookies: prev),
+      onApplied: () => _ytdlpService.enableCookies = value,
+      onRollback: () => _ytdlpService.enableCookies = prev,
+    );
   }
 
   Future<void> refreshBatteryOptimizationStatus() async {
@@ -698,60 +781,135 @@ class PlatformSettingsProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> setMaxConcurrentDownloads(int value) async {
-    if (settings.maxConcurrentDownloads == value) return;
-    await _settingsService.setMaxConcurrentDownloads(value);
-    notifyListeners();
+  Future<void> setMaxConcurrentDownloads(int value) {
+    if (settings.maxConcurrentDownloads == value) return Future.value();
+    final prev = settings.maxConcurrentDownloads;
+    return _runOrderedPersist(
+      fieldKey: 'maxConcurrentDownloads',
+      optimistic: settings.copyWith(maxConcurrentDownloads: value),
+      persist: () => _settingsService.setMaxConcurrentDownloads(
+        value,
+        updateInMemory: false,
+      ),
+      rollbackField: (c) => c.copyWith(maxConcurrentDownloads: prev),
+    );
   }
 
-  Future<void> setAutoMergeStreams(bool value) async {
-    await _settingsService.setAutoMergeStreams(value);
-    notifyListeners();
+  Future<void> setAutoMergeStreams(bool value) {
+    final prev = settings.autoMergeStreams;
+    return _runOrderedPersist(
+      fieldKey: 'autoMergeStreams',
+      optimistic: settings.copyWith(autoMergeStreams: value),
+      persist: () =>
+          _settingsService.setAutoMergeStreams(value, updateInMemory: false),
+      rollbackField: (c) => c.copyWith(autoMergeStreams: prev),
+    );
   }
 
-  Future<void> setDefaultSubtitleLanguage(String languageCode) async {
-    await _settingsService.setDefaultSubtitleLanguage(languageCode);
-    notifyListeners();
+  Future<void> setDefaultSubtitleLanguage(String languageCode) {
+    final prev = settings.defaultSubtitleLanguage;
+    return _runOrderedPersist(
+      fieldKey: 'defaultSubtitleLanguage',
+      optimistic: settings.copyWith(defaultSubtitleLanguage: languageCode),
+      persist: () => _settingsService.setDefaultSubtitleLanguage(
+        languageCode,
+        updateInMemory: false,
+      ),
+      rollbackField: (c) => c.copyWith(defaultSubtitleLanguage: prev),
+    );
   }
 
-  Future<void> setAccentColor(Color? color) async {
-    await _settingsService.setAccentColor(color?.toARGB32());
-    notifyListeners();
+  Future<void> setAccentColor(Color? color) {
+    final prev = settings.accentColorValue;
+    return _runOrderedPersist(
+      fieldKey: 'accentColorValue',
+      optimistic: settings.copyWith(accentColorValue: color?.toARGB32()),
+      persist: () => _settingsService.setAccentColor(
+        color?.toARGB32(),
+        updateInMemory: false,
+      ),
+      rollbackField: (c) => c.copyWith(accentColorValue: prev),
+    );
   }
 
-  Future<void> setEnableAnimations(bool value) async {
-    await _settingsService.setEnableAnimations(value);
-    notifyListeners();
+  Future<void> setEnableAnimations(bool value) {
+    final prev = settings.enableAnimations;
+    return _runOrderedPersist(
+      fieldKey: 'enableAnimations',
+      optimistic: settings.copyWith(enableAnimations: value),
+      persist: () =>
+          _settingsService.setEnableAnimations(value, updateInMemory: false),
+      rollbackField: (c) => c.copyWith(enableAnimations: prev),
+    );
   }
 
-  Future<void> setEnableNotifications(bool value) async {
-    await _settingsService.setEnableNotifications(value);
-    // Propagate to the notification service so system toasts respect the toggle.
-    try {
-      NotificationService.systemNotificationsEnabled = value;
-    } catch (_) {}
-    notifyListeners();
+  Future<void> setEnableNotifications(bool value) {
+    final prev = settings.enableNotifications;
+    return _runOrderedPersist(
+      fieldKey: 'enableNotifications',
+      optimistic: settings.copyWith(enableNotifications: value),
+      persist: () => _settingsService.setEnableNotifications(
+        value,
+        updateInMemory: false,
+      ),
+      rollbackField: (c) => c.copyWith(enableNotifications: prev),
+      onApplied: () {
+        try {
+          NotificationService.systemNotificationsEnabled = value;
+        } catch (_) {}
+      },
+      onRollback: () {
+        try {
+          NotificationService.systemNotificationsEnabled = prev;
+        } catch (_) {}
+      },
+    );
   }
 
-  Future<void> setAutoCheckUpdates(bool value) async {
-    await _settingsService.setAutoCheckUpdates(value);
-    notifyListeners();
+  Future<void> setAutoCheckUpdates(bool value) {
+    final prev = settings.autoCheckUpdates;
+    return _runOrderedPersist(
+      fieldKey: 'autoCheckUpdates',
+      optimistic: settings.copyWith(autoCheckUpdates: value),
+      persist: () =>
+          _settingsService.setAutoCheckUpdates(value, updateInMemory: false),
+      rollbackField: (c) => c.copyWith(autoCheckUpdates: prev),
+    );
   }
 
-  Future<void> setSponsorBlockEnabled(bool value) async {
-    await _settingsService.setSponsorBlockEnabled(value);
-    notifyListeners();
+  Future<void> setSponsorBlockEnabled(bool value) {
+    final prev = settings.sponsorBlockEnabled;
+    return _runOrderedPersist(
+      fieldKey: 'sponsorBlockEnabled',
+      optimistic: settings.copyWith(sponsorBlockEnabled: value),
+      persist: () =>
+          _settingsService.setSponsorBlockEnabled(value, updateInMemory: false),
+      rollbackField: (c) => c.copyWith(sponsorBlockEnabled: prev),
+    );
   }
 
-  Future<void> setEnableLogging(bool value) async {
-    await _settingsService.setEnableLogging(value);
-    await LoggingService().setEnabled(value);
-    notifyListeners();
+  Future<void> setEnableLogging(bool value) {
+    final prev = settings.enableLogging;
+    return _runOrderedPersist(
+      fieldKey: 'enableLogging',
+      optimistic: settings.copyWith(enableLogging: value),
+      persist: () async {
+        await _settingsService.setEnableLogging(value, updateInMemory: false);
+        await LoggingService().setEnabled(value);
+      },
+      rollbackField: (c) => c.copyWith(enableLogging: prev),
+    );
   }
 
-  Future<void> setUseDownloadArchive(bool value) async {
-    await _settingsService.setUseDownloadArchive(value);
-    notifyListeners();
+  Future<void> setUseDownloadArchive(bool value) {
+    final prev = settings.useDownloadArchive;
+    return _runOrderedPersist(
+      fieldKey: 'useDownloadArchive',
+      optimistic: settings.copyWith(useDownloadArchive: value),
+      persist: () =>
+          _settingsService.setUseDownloadArchive(value, updateInMemory: false),
+      rollbackField: (c) => c.copyWith(useDownloadArchive: prev),
+    );
   }
 
   Future<void> setOnboardingComplete(bool value) async {

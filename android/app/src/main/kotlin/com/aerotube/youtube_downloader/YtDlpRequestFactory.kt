@@ -104,7 +104,12 @@ object YtDlpRequestFactory {
      * defaults; [PlayerClient.Fallback] adds web/tv/mweb extractor args for
      * auth/bot failures.
      */
-    fun downloadArgs(job: DownloadJob, client: PlayerClient = PlayerClient.Default): BuiltRequest {
+    fun downloadArgs(
+        job: DownloadJob,
+        client: PlayerClient = PlayerClient.Default,
+        extractorCachePath: String? = null,
+        pluginDirPath: String? = null,
+    ): BuiltRequest {
         val options = mutableListOf<YtDlpArg>()
         val format = resolveFormat(job)
 
@@ -112,6 +117,12 @@ object YtDlpRequestFactory {
         // android/app/src/main/assets/config.txt was dead (never loaded) but a
         // leftover ~/.config/yt-dlp/config could still inject -o/-f overrides.
         options += YtDlpArg.Flag("--ignore-config")
+        if (!extractorCachePath.isNullOrBlank()) {
+            options += YtDlpArg.Opt("--cache-dir", extractorCachePath)
+        }
+        if (!pluginDirPath.isNullOrBlank()) {
+            options += YtDlpArg.Opt("--plugin-dirs", pluginDirPath)
+        }
 
         options += YtDlpArg.Opt("-o", "${job.outputPath}/%(title).200B.%(ext)s")
         options += YtDlpArg.Opt("-f", format)
@@ -227,10 +238,18 @@ object YtDlpRequestFactory {
         cookiesPath: String?,
         userAgent: String?,
         fallback: Boolean = false,
+        extractorCachePath: String? = null,
+        pluginDirPath: String? = null,
     ): BuiltRequest {
         val options = mutableListOf<YtDlpArg>()
 
         options += YtDlpArg.Flag("--ignore-config")
+        if (!extractorCachePath.isNullOrBlank()) {
+            options += YtDlpArg.Opt("--cache-dir", extractorCachePath)
+        }
+        if (!pluginDirPath.isNullOrBlank()) {
+            options += YtDlpArg.Opt("--plugin-dirs", pluginDirPath)
+        }
 
         val cookies = cookiesPath
         if (!cookies.isNullOrEmpty() && File(cookies).exists()) {
@@ -242,7 +261,13 @@ object YtDlpRequestFactory {
 
         options += YtDlpArg.Flag("--force-ipv4")
         options += YtDlpArg.Opt("--socket-timeout", "15")
-        options += YtDlpArg.Opt("--retries", "10")
+        // Interactive metadata must not spend the download retry budget on
+        // each HTTP request. Downloads retain their full retry policy.
+        options += YtDlpArg.Opt("--retries", "3")
+        options += YtDlpArg.Opt("--extractor-retries", "3")
+        // Listing formats doesn't need to download probe fragments. The actual
+        // download still re-extracts and validates the selected streams.
+        options += YtDlpArg.Flag("--no-check-formats")
         options += YtDlpArg.Flag("--no-warnings")
 
         if (fallback) {

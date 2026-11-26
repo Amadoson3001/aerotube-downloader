@@ -3,37 +3,30 @@ import 'package:flutter/material.dart';
 import '../models/search_video_result.dart';
 import '../services/core/search_service.dart';
 import '../services/core/logging_service.dart';
-import '../services/ytdlp/ytdlp_service_android.dart';
-import '../services/ytdlp/ytdlp_service_windows.dart';
+import '../services/ytdlp/ytdlp_tool_service.dart';
 import '../core/utils/error_helper.dart';
 
 class SearchProvider extends ChangeNotifier {
   late final SearchService _searchService;
   Timer? _debounceTimer;
 
-  SearchProvider({dynamic ytdlpService}) {
-    _searchService = SearchService(
-      ytdlpFallback: ytdlpService == null
-          ? null
-          : (query, {int limit = 10}) =>
-                _searchViaYtdlp(ytdlpService, query, limit),
-    );
+  SearchProvider({YtdlpToolService? ytdlpService, SearchService? searchService}) {
+    _searchService = searchService ??
+        SearchService(
+          ytdlpFallback: ytdlpService == null
+              ? null
+              : (query, {int limit = 10}) =>
+                    _searchViaYtdlp(ytdlpService, query, limit),
+        );
   }
 
   /// Platform-aware yt-dlp `ytsearchN:` fallback used when explode search fails.
   Future<List<SearchVideoResult>> _searchViaYtdlp(
-    dynamic service,
+    YtdlpToolService service,
     String query,
     int limit,
   ) async {
-    Map<String, dynamic> raw;
-    if (service is YtdlpServiceAndroid) {
-      raw = await service.searchVideosRaw(query, limit: limit);
-    } else if (service is YtdlpService) {
-      raw = await service.searchVideosRaw(query, limit: limit);
-    } else {
-      return const [];
-    }
+    final raw = await service.searchVideosRaw(query, limit: limit);
 
     // Android wraps yt-dlp JSON as {results: {entries: [...]}}.
     // Desktop searchVideosRaw returns the raw playlist object {entries: [...]}.
@@ -94,7 +87,11 @@ class SearchProvider extends ChangeNotifier {
     return l.contains('timed out') || l.contains('timeout') || l.contains('vpn') || l.contains('socket') || l.contains('connection');
   }
 
-  Future<void> search(String query, {bool immediate = false}) async {
+  Future<void> search(
+    String query, {
+    bool immediate = false,
+    Duration overallBudget = SearchService.defaultOverallBudget,
+  }) async {
     if (query.trim().isEmpty) return;
 
     _debounceTimer?.cancel();
@@ -103,22 +100,29 @@ class SearchProvider extends ChangeNotifier {
     Future<void> execute() async {
       final myGen = ++_searchGen;
       _isLoading = true;
+      _isLoadingMore = false;
       _error = null;
       _lastQuery = trimmed;
       notifyListeners();
 
       try {
-        // Wrap with 12s timeout to not hang indefinitely behind VPN
-        final results = await _searchService.searchVideos(trimmed).timeout(
-          const Duration(seconds: 12),
-          onTimeout: () => throw TimeoutException('Search timed out - VPN may be slowing connection, try again or disable VPN'),
-        );
+        // Single overall deadline shared with SearchService so yt-dlp fallback
+        // gets its bounded slice instead of being cut off by a shorter outer timeout.
+        final results = await _searchService
+            .searchVideos(
+              trimmed,
+              overallBudget: overallBudget,
+              isCancelled: () => myGen != _searchGen || _isDisposed,
+            )
+            .timeout(
+              overallBudget + const Duration(seconds: 2),
+              onTimeout: () => throw TimeoutException(
+                'Search timed out - VPN may be slowing connection, try again or disable VPN',
+              ),
+            );
         if (myGen != _searchGen) return; // cancelled by newer search
         _searchResults = results;
         _hasMoreResults = results.isNotEmpty;
-        if (results.isEmpty && _searchGen == myGen) {
-          // keep empty but no error; service already logs
-        }
       } catch (e, stackTrace) {
         if (myGen != _searchGen) return;
         LoggingService().error(
@@ -130,7 +134,8 @@ class SearchProvider extends ChangeNotifier {
         var cleaned = ErrorHelper.clean(e.toString());
         if (e is TimeoutException || _isVpnError(cleaned)) {
           if (!cleaned.toLowerCase().contains('vpn')) {
-            cleaned = 'Search timed out - VPN may be slowing connection, try again or disable VPN. ($cleaned)';
+            cleaned =
+                'Search timed out - VPN may be slowing connection, try again or disable VPN. ($cleaned)';
           }
         }
         _error = cleaned;
@@ -154,16 +159,24 @@ class SearchProvider extends ChangeNotifier {
 
   Future<void> loadMore() async {
     if (_isLoadingMore || _isLoading || !_hasMoreResults) return;
+    final myGen = _searchGen;
+    final expectedQuery = _lastQuery;
+    if (expectedQuery.isEmpty) return;
 
     _isLoadingMore = true;
     _error = null;
     notifyListeners();
 
     try {
-      final nextResults = await _searchService.loadMoreVideos().timeout(
-        const Duration(seconds: 12),
-        onTimeout: () => throw TimeoutException('Load more timed out - VPN may be slowing connection'),
-      );
+      final nextResults = await _searchService
+          .loadMoreVideos(expectedQuery: expectedQuery)
+          .timeout(
+            const Duration(seconds: 18),
+            onTimeout: () => throw TimeoutException(
+              'Load more timed out - VPN may be slowing connection',
+            ),
+          );
+      if (myGen != _searchGen || _lastQuery != expectedQuery) return;
       if (nextResults.isEmpty) {
         _hasMoreResults = false;
       } else {
@@ -178,6 +191,7 @@ class SearchProvider extends ChangeNotifier {
         }
       }
     } catch (e, stackTrace) {
+      if (myGen != _searchGen || _lastQuery != expectedQuery) return;
       LoggingService().error(
         'Load more search results failed: $e',
         component: 'SearchProvider',
@@ -186,12 +200,15 @@ class SearchProvider extends ChangeNotifier {
       );
       var cleaned = ErrorHelper.clean(e.toString());
       if (e is TimeoutException || _isVpnError(cleaned)) {
-        cleaned = 'Load more timed out - VPN may be slowing connection. ($cleaned)';
+        cleaned =
+            'Load more timed out - VPN may be slowing connection. ($cleaned)';
       }
       _error = cleaned;
     } finally {
-      _isLoadingMore = false;
-      notifyListeners();
+      if (myGen == _searchGen) {
+        _isLoadingMore = false;
+        notifyListeners();
+      }
     }
   }
 
@@ -227,6 +244,10 @@ class SearchProvider extends ChangeNotifier {
 
   void clearSearch() {
     _debounceTimer?.cancel();
+    _searchGen++;
+    _searchService.resetPagination();
+    _isLoading = false;
+    _isLoadingMore = false;
     _searchResults = [];
     _lastQuery = '';
     _error = null;

@@ -211,7 +211,7 @@ class _HomeScreenState extends State<HomeScreen> {
     BuildContext context,
     VideoProvider videoProvider,
   ) {
-    return UrlComposer(
+    final capsule = UrlComposer(
       controller: _urlController,
       focusNode: _urlFocusNode,
       showPasteButton: true,
@@ -223,7 +223,13 @@ class _HomeScreenState extends State<HomeScreen> {
           : videoProvider.loadingStatus,
       errorMessage: videoProvider.hasError ? videoProvider.errorMessage : null,
       maxWidth: 860,
-    ).animate().slideY(begin: -0.18, curve: AppMotion.decelerate, duration: 180.ms).fadeIn(duration: 140.ms);
+    );
+    final dur = appMotionDuration(context, AppMotion.medium);
+    if (dur == Duration.zero) return capsule;
+    return capsule
+        .animate()
+        .slideY(begin: -0.18, curve: AppMotion.decelerate, duration: dur)
+        .fadeIn(duration: appMotionDuration(context, AppMotion.short));
   }
 
   /// One readable workspace keeps the form and activity on the same grid.

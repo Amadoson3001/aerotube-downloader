@@ -15,6 +15,7 @@ import '../../providers/navigation_provider.dart';
 import '../../providers/platform_settings_provider.dart';
 import '../../providers/video_provider.dart';
 import '../components/components.dart';
+import 'video_configuration_controls.dart';
 
 /// Full-screen Android video configuration panel conforming to AeroTube redesign spec.
 ///
@@ -96,7 +97,10 @@ class _MobileVideoConfigurationWidgetState
                       if (!videoProvider.audioOnly) ...[
                         _buildVideoQualitySection(context, aero, videoProvider),
                       ] else ...[
-                        _buildAudioQualitySection(context, aero, videoProvider),
+                        AudioQualityConfigurationSection(
+                          provider: videoProvider,
+                          horizontalScrollTiers: true,
+                        ),
                       ],
                       const SizedBox(height: AeroSpace.xl),
 
@@ -332,193 +336,13 @@ class _MobileVideoConfigurationWidgetState
         const SizedBox(height: AeroSpace.lg),
 
         // Codec variants row
-        _buildCodecVariants(context, aero, provider),
+        VideoCodecVariantsSection(provider: provider),
 
         // Audio merge track selector if video is video-only
         if (provider.selectedVideoFormat?.hasAudio == false) ...[
           const SizedBox(height: AeroSpace.lg),
-          _buildAudioTrackSelector(context, aero, provider),
+          AudioMergeTrackSelector(provider: provider),
         ],
-      ],
-    );
-  }
-
-  Widget _buildCodecVariants(
-    BuildContext context,
-    AeroColors aero,
-    VideoProvider provider,
-  ) {
-    final resolution = provider.selectedResolution;
-    if (resolution == null || resolution.formats.isEmpty) {
-      return const SizedBox.shrink();
-    }
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const SectionHeader(title: 'CODEC VARIANTS'),
-        const SizedBox(height: AeroSpace.sm),
-        Wrap(
-          spacing: AeroSpace.sm,
-          runSpacing: AeroSpace.sm,
-          children: resolution.formats.map((format) {
-            final isSelected =
-                provider.selectedVideoFormat?.formatId == format.formatId;
-            final container = (format.extension ?? 'mp4').toUpperCase();
-            final label = '$container · ${format.codecName}';
-
-            return FormatChip(
-              label: label,
-              badge: format.isHdr
-                  ? 'HDR'
-                  : format.is60fps
-                  ? '60fps'
-                  : null,
-              sizeEstimate: provider.formattedTotalSizeForFormat(format),
-              selected: isSelected,
-              onTap: () => provider.setSelectedVideoFormat(format),
-            );
-          }).toList(),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildAudioTrackSelector(
-    BuildContext context,
-    AeroColors aero,
-    VideoProvider provider,
-  ) {
-    final video = provider.videoInfo;
-    if (video == null || video.audioOnlyFormats.isEmpty) {
-      return const SizedBox.shrink();
-    }
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const SectionHeader(title: 'AUDIO TRACK TO MERGE'),
-        const SizedBox(height: AeroSpace.sm),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: AeroSpace.md),
-          decoration: BoxDecoration(
-            color: aero.surface2,
-            borderRadius: AeroRadius.smBorderRadius,
-            border: Border.all(color: aero.outline, width: 1.0),
-          ),
-          child: DropdownButtonHideUnderline(
-            child: DropdownButton<FormatInfo>(
-              value: provider.selectedAudioMergeStream,
-              isExpanded: true,
-              dropdownColor: aero.surface2,
-              icon: Icon(
-                Symbols.arrow_drop_down_rounded,
-                color: aero.onSurfaceMuted,
-              ),
-              style: AeroText.bodySm.copyWith(color: aero.onSurface),
-              onChanged: (newValue) {
-                if (newValue != null) {
-                  provider.setSelectedAudioMergeStream(newValue);
-                }
-              },
-              items: video.audioOnlyFormats.map((format) {
-                final bitrate = format.audioBitrate ?? 0;
-                final size = format.formattedEstimatedFilesize(video.duration);
-                return DropdownMenuItem<FormatInfo>(
-                  value: format,
-                  child: Text(
-                    '${format.audioTrackLabel} · ${bitrate}kbps ($size) [${format.codecName}]',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                );
-              }).toList(),
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
-  // ==========================================
-  // 3. Audio Quality Section
-  // ==========================================
-
-  Widget _buildAudioQualitySection(
-    BuildContext context,
-    AeroColors aero,
-    VideoProvider provider,
-  ) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const SectionHeader(title: 'AUDIO QUALITY TIER'),
-        const SizedBox(height: AeroSpace.sm),
-        SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          child: Row(
-            children: AudioQuality.values.map((quality) {
-              final isSelected = quality == provider.selectedAudioQuality;
-              return Padding(
-                padding: const EdgeInsets.only(right: AeroSpace.sm),
-                child: FormatChip(
-                  label: quality.label,
-                  selected: isSelected,
-                  onTap: () => provider.setAudioQuality(quality),
-                ),
-              );
-            }).toList(),
-          ),
-        ),
-        const SizedBox(height: AeroSpace.lg),
-        _buildAudioStreamsList(context, aero, provider),
-      ],
-    );
-  }
-
-  Widget _buildAudioStreamsList(
-    BuildContext context,
-    AeroColors aero,
-    VideoProvider provider,
-  ) {
-    final video = provider.videoInfo;
-    if (video == null) return const SizedBox.shrink();
-
-    final audioFormats = video.getAudioFormatsForQuality(
-      provider.selectedAudioQuality,
-    );
-
-    if (audioFormats.isEmpty) {
-      return Text(
-        'No audio streams available.',
-        style: AeroText.bodySm.copyWith(color: aero.onSurfaceMuted),
-      );
-    }
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const SectionHeader(title: 'AUDIO STREAMS'),
-        const SizedBox(height: AeroSpace.sm),
-        Wrap(
-          spacing: AeroSpace.sm,
-          runSpacing: AeroSpace.sm,
-          children: audioFormats.map((format) {
-            final isSelected =
-                format.formatId == provider.selectedAudioMergeStream?.formatId;
-            final ext = (format.extension ?? 'AUDIO').toUpperCase();
-            final label = '$ext · ${format.audioBitrate ?? 0}kbps';
-            final size = format.formattedEstimatedFilesize(video.duration);
-
-            return FormatChip(
-              label: label,
-              sizeEstimate: size,
-              badge: format.audioTrackLabel,
-              selected: isSelected,
-              onTap: () => provider.setSelectedAudioMergeStream(format),
-            );
-          }).toList(),
-        ),
       ],
     );
   }
@@ -608,59 +432,11 @@ class _MobileVideoConfigurationWidgetState
             Divider(height: 1, color: aero.outline),
 
             // Subtitles row
-            if (video.subtitles.isNotEmpty) ...[
-              SettingsRow(
-                icon: Symbols.subtitles_rounded,
-                title: 'Subtitles',
-                subtitle: provider.selectedSubtitles.isEmpty
-                    ? 'None selected'
-                    : '${provider.selectedSubtitles.length} selected',
-                trailing: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      'Embed',
-                      style: AeroText.caption.copyWith(
-                        color: aero.onSurfaceMuted,
-                      ),
-                    ),
-                    const SizedBox(width: AeroSpace.xs),
-                    Switch(
-                      value: provider.embedSubtitles,
-                      onChanged: provider.selectedSubtitles.isNotEmpty
-                          ? (v) => provider.setEmbedSubtitles(v)
-                          : null,
-                      activeThumbColor: aero.primary,
-                    ),
-                  ],
-                ),
-              ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(
-                  AeroSpace.lg,
-                  0,
-                  AeroSpace.lg,
-                  AeroSpace.md,
-                ),
-                child: Wrap(
-                  spacing: AeroSpace.xs,
-                  runSpacing: AeroSpace.xs,
-                  children:
-                      _sortSubtitles(
-                        video.subtitles,
-                        settingsProvider.defaultSubtitleLanguage,
-                      ).take(6).map((sub) {
-                        final isSel = provider.selectedSubtitles.contains(sub);
-                        return AeroChip(
-                          text: sub.name,
-                          selected: isSel,
-                          onTap: () => provider.toggleSubtitle(sub),
-                        );
-                      }).toList(),
-                ),
-              ),
-              Divider(height: 1, color: aero.outline),
-            ],
+            SubtitleConfigurationSection(
+              provider: provider,
+              video: video,
+              preferredLanguage: settingsProvider.defaultSubtitleLanguage,
+            ),
 
             // SponsorBlock row
             SettingsRow(
@@ -690,25 +466,6 @@ class _MobileVideoConfigurationWidgetState
         ],
       ),
     );
-  }
-
-  List<SubtitleTrack> _sortSubtitles(
-    List<SubtitleTrack> subtitles,
-    String preferred,
-  ) {
-    if (preferred.isEmpty || preferred == 'auto') return subtitles;
-    final copy = List<SubtitleTrack>.from(subtitles);
-    copy.sort((a, b) {
-      final aPref = a.languageCode.toLowerCase().startsWith(
-        preferred.toLowerCase(),
-      );
-      final bPref = b.languageCode.toLowerCase().startsWith(
-        preferred.toLowerCase(),
-      );
-      if (aPref == bPref) return a.name.compareTo(b.name);
-      return aPref ? -1 : 1;
-    });
-    return copy;
   }
 
   // ==========================================
@@ -856,74 +613,74 @@ class _MobileVideoConfigurationWidgetState
         ),
         title: Text('Loading Video', style: AeroText.titleSm),
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(AeroSpace.xxl),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const AspectRatio(
-              aspectRatio: 16 / 9,
-              child: ThumbnailTile(
-                borderRadius: BorderRadius.all(Radius.circular(14)),
-              ),
-            ),
-            const SizedBox(height: AeroSpace.xl),
-            _skeletonBar(aero, height: 18, widthFactor: 0.9),
-            const SizedBox(height: AeroSpace.md),
-            _skeletonBar(aero, height: 12, widthFactor: 0.5),
-            const SizedBox(height: AeroSpace.xxl),
-            Row(
-              children: [
-                Expanded(
-                  child: _skeletonBar(aero, height: 44, widthFactor: 1.0),
-                ),
-                const SizedBox(width: AeroSpace.sm),
-                Expanded(
-                  child: _skeletonBar(aero, height: 44, widthFactor: 1.0),
-                ),
-                const SizedBox(width: AeroSpace.sm),
-                Expanded(
-                  child: _skeletonBar(aero, height: 44, widthFactor: 1.0),
-                ),
-              ],
-            ),
-            const Spacer(),
-            Row(
-              children: [
-                Expanded(
-                  child: AeroButton(
-                    variant: AeroButtonVariant.ghost,
-                    text: 'Cancel',
-                    onPressed: () {
-                      provider.cancelFetch();
-                      if (widget.onClear != null) {
-                        widget.onClear!();
-                      } else {
-                        Navigator.pop(context);
-                      }
-                    },
+      body: AeroShimmerScope(
+        child: Padding(
+          padding: const EdgeInsets.all(AeroSpace.xxl),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const AspectRatio(
+                aspectRatio: 16 / 9,
+                child: ThumbnailTile(
+                  borderRadius: BorderRadius.all(Radius.circular(14)),
+                  fallback: AeroSkeletonBox(
+                    borderRadius: BorderRadius.all(Radius.circular(14)),
                   ),
                 ),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _skeletonBar(
-    AeroColors aero, {
-    required double height,
-    required double widthFactor,
-  }) {
-    return FractionallySizedBox(
-      widthFactor: widthFactor,
-      child: Container(
-        height: height,
-        decoration: BoxDecoration(
-          color: aero.surface2,
-          borderRadius: AeroRadius.smBorderRadius,
+              ),
+              const SizedBox(height: AeroSpace.xl),
+              const AeroSkeletonBox(height: 18, widthFactor: 0.9, phaseOffset: 0.08),
+              const SizedBox(height: AeroSpace.md),
+              const AeroSkeletonBox(height: 12, widthFactor: 0.5, phaseOffset: 0.16),
+              const SizedBox(height: AeroSpace.xxl),
+              const Row(
+                children: [
+                  Expanded(
+                    child: AeroSkeletonBox(
+                      height: 44,
+                      widthFactor: 1.0,
+                      phaseOffset: 0.24,
+                    ),
+                  ),
+                  SizedBox(width: AeroSpace.sm),
+                  Expanded(
+                    child: AeroSkeletonBox(
+                      height: 44,
+                      widthFactor: 1.0,
+                      phaseOffset: 0.32,
+                    ),
+                  ),
+                  SizedBox(width: AeroSpace.sm),
+                  Expanded(
+                    child: AeroSkeletonBox(
+                      height: 44,
+                      widthFactor: 1.0,
+                      phaseOffset: 0.40,
+                    ),
+                  ),
+                ],
+              ),
+              const Spacer(),
+              Row(
+                children: [
+                  Expanded(
+                    child: AeroButton(
+                      variant: AeroButtonVariant.ghost,
+                      text: 'Cancel',
+                      onPressed: () {
+                        provider.cancelFetch();
+                        if (widget.onClear != null) {
+                          widget.onClear!();
+                        } else {
+                          Navigator.pop(context);
+                        }
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
         ),
       ),
     );

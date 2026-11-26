@@ -69,6 +69,111 @@ class UrlValidator {
         lower.contains('music.youtube.com/');
   }
 
+  static const Set<String> _trackingQueryParams = {
+    'si',
+    'feature',
+    'pp',
+    'ab_channel',
+    'utm_source',
+    'utm_medium',
+    'utm_campaign',
+    'utm_term',
+    'utm_content',
+    'fbclid',
+    'gclid',
+    't',
+  };
+
+  /// Extracts a YouTube video ID from any supported YouTube URL form, or null.
+  static String? extractYouTubeVideoId(String url) {
+    final trimmed = url.trim();
+    if (trimmed.isEmpty) return null;
+    final candidate = _looksLikeSchemelessHost(trimmed)
+        ? 'https://$trimmed'
+        : trimmed;
+    final uri = Uri.tryParse(candidate);
+    if (uri == null || !youtubeHosts.contains(uri.host.toLowerCase())) {
+      return null;
+    }
+
+    final host = uri.host.toLowerCase();
+    final segments = uri.pathSegments.where((s) => s.isNotEmpty).toList();
+
+    if (host == 'youtu.be' || host == 'www.youtu.be') {
+      if (segments.isNotEmpty && segments.first.isNotEmpty) {
+        return segments.first;
+      }
+      return null;
+    }
+
+    // Standard watch?v=<id>
+    final vParam = uri.queryParameters['v'];
+    if (vParam != null && vParam.isNotEmpty) {
+      return vParam;
+    }
+
+    // /shorts/<id>, /live/<id>, /embed/<id>, /v/<id>
+    if (segments.length >= 2 &&
+        const {'shorts', 'live', 'embed', 'v'}.contains(segments.first)) {
+      return segments[1];
+    }
+
+    return null;
+  }
+
+  /// Normalizes equivalent video URLs to a canonical form for caching and
+  /// in-flight request deduplication.
+  static String normalizeVideoUrl(String url) {
+    final trimmed = url.trim();
+    if (trimmed.isEmpty) return trimmed;
+
+    final candidate = _looksLikeSchemelessHost(trimmed)
+        ? 'https://$trimmed'
+        : trimmed;
+    final uri = Uri.tryParse(candidate);
+    if (uri == null || !uri.hasAuthority) return trimmed;
+
+    final videoId = extractYouTubeVideoId(candidate);
+    if (videoId != null) {
+      return 'https://www.youtube.com/watch?v=$videoId';
+    }
+
+    // Canonicalize YouTube playlist URLs when there is no video ID.
+    if (youtubeHosts.contains(uri.host.toLowerCase())) {
+      final listId = uri.queryParameters['list'];
+      if (listId != null &&
+          listId.isNotEmpty &&
+          uri.pathSegments.contains('playlist')) {
+        return 'https://www.youtube.com/playlist?list=$listId';
+      }
+    }
+
+    // Generic normalization for non-YouTube URLs: lowercase scheme/host,
+    // drop fragment, strip common tracking params, sort remaining query params.
+    final cleanedParams = <String, String>{};
+    final keys = uri.queryParameters.keys
+        .where((k) => !_trackingQueryParams.contains(k.toLowerCase()))
+        .toList()
+      ..sort();
+    for (final k in keys) {
+      cleanedParams[k] = uri.queryParameters[k] ?? '';
+    }
+
+    var path = uri.path;
+    if (path.length > 1 && path.endsWith('/')) {
+      path = path.substring(0, path.length - 1);
+    }
+
+    return Uri(
+      scheme: uri.scheme.toLowerCase(),
+      userInfo: uri.userInfo,
+      host: uri.host.toLowerCase(),
+      port: uri.hasPort ? uri.port : null,
+      path: path,
+      queryParameters: cleanedParams.isEmpty ? null : cleanedParams,
+    ).toString();
+  }
+
   /// True when [url] looks like a playlist (YouTube `list=` param or a
   /// `/playlist` path segment used by several sites).
   /// M1: require a real playlist signal — a non-empty `list` query param

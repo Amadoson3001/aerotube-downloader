@@ -31,17 +31,23 @@ object YtDlpEngine {
     private const val FFMPEG_BUNDLED_LABEL = "bundled-0.18.1"
 
     /**
-     * Default when Dart/MainActivity omit concurrent_fragments.
-     * Must match YtdlpServiceAndroid.defaultConcurrentFragments (Dart).
-     * 16 matches Windows broadband path so dual-stream DASH can saturate
-     * the link; yt-dlp's own default (1) is far too slow for YouTube.
+     * Default per-download fragment concurrency and shared ceiling across
+     * concurrent downloads. 8 fragments saturates mobile links without the
+     * socket/thermal contention of 16, and scaling down when multiple
+     * downloads run keeps total fragment sockets bounded to 12.
      */
-    private const val DEFAULT_CONCURRENT_FRAGMENTS = 16
+    private const val DEFAULT_CONCURRENT_FRAGMENTS = 8
+    private const val MAX_SHARED_FRAGMENTS = 12
+    private const val PROGRESS_COALESCE_MS = 100L
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val activeJobs = ConcurrentHashMap<String, Job>()
     private val cancelledIds = ConcurrentHashMap.newKeySet<String>()
     private val runTokens = ConcurrentHashMap<String, Int>()
+    private val activeInfoRequests = ConcurrentHashMap.newKeySet<String>()
+    private val cancelledInfoIds = ConcurrentHashMap.newKeySet<String>()
+    private val lastProgressEmitMs = ConcurrentHashMap<String, Long>()
+    private val lastProgressValue = ConcurrentHashMap<String, Float>()
     private val jobLock = Any()
 
     @Volatile
@@ -62,6 +68,7 @@ object YtDlpEngine {
             youtubeDLInitialized = true
             Log.d(TAG, "YoutubeDL initialized successfully")
         }
+        ensureEjsCachePlugin(app)
         ensureFfmpeg()
     }
 
@@ -134,35 +141,78 @@ object YtDlpEngine {
         }
     }
 
-    fun getVideoInfo(context: Context, url: String, cookiesPath: String?, userAgent: String?): String {
+    fun getVideoInfo(
+        context: Context,
+        url: String,
+        cookiesPath: String?,
+        userAgent: String?,
+        requestId: String? = null,
+    ): String {
+        val startedAt = android.os.SystemClock.elapsedRealtime()
         return try {
             ensureInit(context)
+            if (requestId != null) {
+                if (cancelledInfoIds.remove(requestId)) {
+                    return cancelledJson()
+                }
+                activeInfoRequests.add(requestId)
+            }
             var response = try {
-                executeInfo(url, cookiesPath, userAgent, fallback = false, dumpFlag = "-j", extra = listOf("--no-playlist"))
+                executeInfo(
+                    url, cookiesPath, userAgent,
+                    fallback = false, dumpFlag = "-j", extra = listOf("--no-playlist"),
+                    requestId = requestId,
+                )
             } catch (execError: Exception) {
+                if (requestId != null && cancelledInfoIds.contains(requestId)) {
+                    throw execError
+                }
                 val msg = execError.message ?: ""
                 if (isAuthOrBotFailure(msg)) {
                     Log.w(TAG, "Primary yt-dlp client failed, retrying with web/tv clients: $msg")
-                    executeInfo(url, cookiesPath, userAgent, fallback = true, dumpFlag = "-j", extra = listOf("--no-playlist"))
+                    executeInfo(
+                        url, cookiesPath, userAgent,
+                        fallback = true, dumpFlag = "-j", extra = listOf("--no-playlist"),
+                        requestId = requestId,
+                    )
                 } else {
                     throw execError
                 }
             }
 
-            // Parse stdout ONCE (previous code double-parsed).
+            if (requestId != null && cancelledInfoIds.remove(requestId)) {
+                return cancelledJson()
+            }
+
+            // Parse stdout ONCE and compact to fields Dart consumes.
             val stdout = response.out
             val infoJson = JSONObject(stdout.trim())
             logFormatSummary(infoJson)
+            val compacted = compactInfoJson(infoJson)
 
             val json = JSONObject()
             json.put("success", true)
-            json.put("info", infoJson)
-            json.toString()
+            json.put("info", compacted)
+            val outStr = json.toString()
+            Log.i(
+                TAG,
+                "Metadata ready in ${android.os.SystemClock.elapsedRealtime() - startedAt}ms; " +
+                    "${outStr.length} JSON chars (raw ${stdout.length})"
+            )
+            outStr
         } catch (e: Throwable) {
+            if (requestId != null && cancelledInfoIds.remove(requestId)) {
+                return cancelledJson()
+            }
             // Catch Throwable (not Exception): R8-stripped classes surface as
             // Error subclasses (NoClassDefFoundError, UnsatisfiedLinkError, …)
             // which Exception would miss, bubbling up as a bare PlatformException.
             errorJson(e, "Failed to get video info")
+        } finally {
+            if (requestId != null) {
+                activeInfoRequests.remove(requestId)
+                cancelledInfoIds.remove(requestId)
+            }
         }
     }
 
@@ -172,9 +222,16 @@ object YtDlpEngine {
         cookiesPath: String?,
         userAgent: String?,
         playlistItems: String? = null,
+        requestId: String? = null,
     ): String {
         return try {
             ensureInit(context)
+            if (requestId != null) {
+                if (cancelledInfoIds.remove(requestId)) {
+                    return cancelledJson()
+                }
+                activeInfoRequests.add(requestId)
+            }
             val extra = buildList {
                 add("--flat-playlist")
                 // yt-dlp --playlist-items is nargs=1: two argv tokens.
@@ -184,22 +241,44 @@ object YtDlpEngine {
                 }
             }
             val response = try {
-                executeInfo(url, cookiesPath, userAgent, fallback = false, dumpFlag = "-J", extra = extra)
+                executeInfo(
+                    url, cookiesPath, userAgent,
+                    fallback = false, dumpFlag = "-J", extra = extra,
+                    requestId = requestId,
+                )
             } catch (execError: Exception) {
+                if (requestId != null && cancelledInfoIds.contains(requestId)) {
+                    throw execError
+                }
                 val msg = execError.message ?: ""
                 if (isAuthOrBotFailure(msg)) {
                     Log.w(TAG, "Primary yt-dlp playlist client failed, retrying with web/tv clients: $msg")
-                    executeInfo(url, cookiesPath, userAgent, fallback = true, dumpFlag = "-J", extra = extra)
+                    executeInfo(
+                        url, cookiesPath, userAgent,
+                        fallback = true, dumpFlag = "-J", extra = extra,
+                        requestId = requestId,
+                    )
                 } else {
                     throw execError
                 }
+            }
+            if (requestId != null && cancelledInfoIds.remove(requestId)) {
+                return cancelledJson()
             }
             val json = JSONObject()
             json.put("success", true)
             json.put("playlist", JSONObject(response.out.trim()))
             json.toString()
         } catch (e: Throwable) {
+            if (requestId != null && cancelledInfoIds.remove(requestId)) {
+                return cancelledJson()
+            }
             errorJson(e, "Failed to get playlist info")
+        } finally {
+            if (requestId != null) {
+                activeInfoRequests.remove(requestId)
+                cancelledInfoIds.remove(requestId)
+            }
         }
     }
 
@@ -213,9 +292,16 @@ object YtDlpEngine {
         limit: Int,
         cookiesPath: String?,
         userAgent: String?,
+        requestId: String? = null,
     ): String {
         return try {
             ensureInit(context)
+            if (requestId != null) {
+                if (cancelledInfoIds.remove(requestId)) {
+                    return cancelledJson()
+                }
+                activeInfoRequests.add(requestId)
+            }
             val n = limit.coerceIn(1, 25)
             val searchUrl = "ytsearch$n:$query"
             // --flat-playlist only. Do NOT pass --no-playlist: ytsearchN: is a
@@ -223,27 +309,72 @@ object YtDlpEngine {
             val response = try {
                 executeInfo(
                     searchUrl, cookiesPath, userAgent,
-                    fallback = false, dumpFlag = "-J", extra = listOf("--flat-playlist")
+                    fallback = false, dumpFlag = "-J", extra = listOf("--flat-playlist"),
+                    requestId = requestId,
                 )
             } catch (execError: Exception) {
+                if (requestId != null && cancelledInfoIds.contains(requestId)) {
+                    throw execError
+                }
                 val msg = execError.message ?: ""
                 if (isAuthOrBotFailure(msg)) {
                     Log.w(TAG, "Primary yt-dlp search client failed, retrying with web/tv clients: $msg")
                     executeInfo(
                         searchUrl, cookiesPath, userAgent,
-                        fallback = true, dumpFlag = "-J", extra = listOf("--flat-playlist")
+                        fallback = true, dumpFlag = "-J", extra = listOf("--flat-playlist"),
+                        requestId = requestId,
                     )
                 } else {
                     throw execError
                 }
+            }
+            if (requestId != null && cancelledInfoIds.remove(requestId)) {
+                return cancelledJson()
             }
             val json = JSONObject()
             json.put("success", true)
             json.put("results", JSONObject(response.out.trim()))
             json.toString()
         } catch (e: Throwable) {
+            if (requestId != null && cancelledInfoIds.remove(requestId)) {
+                return cancelledJson()
+            }
             errorJson(e, "Failed to search videos")
+        } finally {
+            if (requestId != null) {
+                activeInfoRequests.remove(requestId)
+                cancelledInfoIds.remove(requestId)
+            }
         }
+    }
+
+    fun cancelFetch(requestId: String? = null): Boolean {
+        val targets = if (!requestId.isNullOrBlank()) {
+            listOf(requestId)
+        } else {
+            activeInfoRequests.toList()
+        }
+        var destroyedAny = false
+        for (id in targets) {
+            cancelledInfoIds.add(id)
+            activeInfoRequests.remove(id)
+            try {
+                if (YoutubeDL.getInstance().destroyProcessById(id)) {
+                    destroyedAny = true
+                }
+            } catch (e: Throwable) {
+                Log.w(TAG, "destroyProcessById($id) failed", e)
+            }
+        }
+        return destroyedAny || targets.isNotEmpty()
+    }
+
+    private fun cancelledJson(): String {
+        val json = JSONObject()
+        json.put("success", false)
+        json.put("cancelled", true)
+        json.put("error", "Fetch cancelled by user")
+        return json.toString()
     }
 
     /**
@@ -346,6 +477,8 @@ object YtDlpEngine {
                 DownloadService.instance?.completeDownload(processId)
             } finally {
                 pathFile.delete()
+                lastProgressEmitMs.remove(processId)
+                lastProgressValue.remove(processId)
                 synchronized(jobLock) {
                     if (activeJobs[processId] === launched) {
                         activeJobs.remove(processId)
@@ -369,8 +502,12 @@ object YtDlpEngine {
      * `--print-to-file after_move:filepath <file>` form.
      */
     private fun DownloadJob.withEngineDefaults(context: Context, pathFile: File): DownloadJob {
+        val activeCount = (activeJobs.size + 1).coerceAtLeast(1)
+        val requested = concurrentFragments ?: DEFAULT_CONCURRENT_FRAGMENTS
+        val sharedCap = (MAX_SHARED_FRAGMENTS / activeCount).coerceIn(2, DEFAULT_CONCURRENT_FRAGMENTS)
+        val effectiveFragments = requested.coerceAtMost(sharedCap).coerceAtLeast(1)
         return copy(
-            concurrentFragments = concurrentFragments ?: DEFAULT_CONCURRENT_FRAGMENTS,
+            concurrentFragments = effectiveFragments,
             tempDir = tempDir ?: File(context.cacheDir, "aerotube_temp").absolutePath,
             printToFile = printToFile ?: pathFile.absolutePath
         )
@@ -570,18 +707,27 @@ object YtDlpEngine {
         fallback: Boolean,
         dumpFlag: String,
         extra: List<String>,
+        requestId: String? = null,
     ): com.yausername.youtubedl_android.YoutubeDLResponse {
         val cookies = cookiesPath?.takeIf { it.isNotEmpty() && File(it).exists() }
         if (cookiesPath != null && cookiesPath.isNotEmpty() && cookies == null) {
             Log.e(TAG, "Cookie file not found at: $cookiesPath")
         }
-        val built = YtDlpRequestFactory.infoArgs(url, cookies, userAgent, fallback)
+        val built = YtDlpRequestFactory.infoArgs(
+            url, cookies, userAgent, fallback,
+            extractorCachePath = extractorCachePath(),
+            pluginDirPath = pluginDirPath(),
+        )
         val request = buildRequest(built)
         request.addOption(dumpFlag)
         for (flag in extra) {
             request.addOption(flag)
         }
-        return YoutubeDL.getInstance().execute(request)
+        return if (requestId != null) {
+            YoutubeDL.getInstance().execute(request, requestId, null)
+        } else {
+            YoutubeDL.getInstance().execute(request)
+        }
     }
 
     private fun logFormatSummary(infoJson: JSONObject) {
@@ -610,24 +756,37 @@ object YtDlpEngine {
     }
 
     private fun executeDownload(job: DownloadJob, processId: String, client: PlayerClient) {
-        val built = YtDlpRequestFactory.downloadArgs(job, client)
+        val built = YtDlpRequestFactory.downloadArgs(
+            job, client,
+            extractorCachePath = extractorCachePath(),
+            pluginDirPath = pluginDirPath(),
+        )
         val request = buildRequest(built)
         try {
             YoutubeDL.getInstance().execute(request, processId) { progress, eta, line ->
-                DownloadEventBus.emit(
-                    mapOf(
-                        "event" to "progress",
-                        "process_id" to processId,
-                        "progress" to progress,
-                        "eta" to eta,
-                        "line" to line,
-                        "output_path" to job.outputPath
+                val now = android.os.SystemClock.elapsedRealtime()
+                val prevMs = lastProgressEmitMs[processId] ?: 0L
+                val prevVal = lastProgressValue[processId] ?: -1f
+                val significantDelta = kotlin.math.abs(progress - prevVal) >= 2.0f
+                val isTerminalProgress = progress >= 99.9f
+                if (now - prevMs >= PROGRESS_COALESCE_MS || significantDelta || isTerminalProgress) {
+                    lastProgressEmitMs[processId] = now
+                    lastProgressValue[processId] = progress
+                    DownloadEventBus.emit(
+                        mapOf(
+                            "event" to "progress",
+                            "process_id" to processId,
+                            "progress" to progress,
+                            "eta" to eta,
+                            "line" to line,
+                            "output_path" to job.outputPath
+                        )
                     )
-                )
-                // youtubedl-android reports 0..100. DownloadService expects 0..1;
-                // passing the raw value clamps to 100% at the first percent.
-                val fraction = (progress / 100f).coerceIn(0f, 1f)
-                DownloadService.instance?.reportProgress(processId, fraction, line)
+                    // youtubedl-android reports 0..100. DownloadService expects 0..1;
+                    // passing the raw value clamps to 100% at the first percent.
+                    val fraction = (progress / 100f).coerceIn(0f, 1f)
+                    DownloadService.instance?.reportProgress(processId, fraction, line)
+                }
             }
         } catch (execError: Exception) {
             val msg = execError.message ?: ""
@@ -639,6 +798,154 @@ object YtDlpEngine {
             }
         }
     }
+
+    /** Explicitly opt in: youtubedl-android otherwise adds --no-cache-dir.
+     * Only extractor internals (e.g. player signatures) are cached here;
+     * each uncached video still gets fresh stream URLs and all formats.
+     */
+    private fun extractorCachePath(): String? = appContext?.let {
+        File(it.cacheDir, "ytdlp-extractor").absolutePath
+    }
+
+    private fun pluginDirPath(): String? = appContext?.let {
+        File(it.noBackupFilesDir, "aerotube-ytdlp-plugins").absolutePath
+    }
+
+    /**
+     * Installs a tiny yt-dlp extractor plugin that enables EJS preprocessed
+     * player caching and bounds the cache to the 3 newest player entries.
+     * Without this, yt-dlp re-parses the ~2.5 MB player.js in QuickJS (~7.4s)
+     * on every single video fetch.
+     */
+    private fun ensureEjsCachePlugin(context: Context) {
+        try {
+            val baseDir = File(context.noBackupFilesDir, "aerotube-ytdlp-plugins")
+            // Clean up legacy flat layout if present.
+            val legacyDir = File(baseDir, "yt_dlp_plugins")
+            if (legacyDir.exists()) legacyDir.deleteRecursively()
+
+            // yt-dlp --plugin-dirs scans <dir>/<plugin_name>/yt_dlp_plugins/extractor/.
+            val dir = File(baseDir, "ejs_cache/yt_dlp_plugins/extractor")
+            if (!dir.exists()) dir.mkdirs()
+            val file = File(dir, "aerotube_ejs_cache.py")
+            val content = EJS_CACHE_PLUGIN_SOURCE
+            if (!file.exists() || file.readText() != content) {
+                file.writeText(content)
+            }
+        } catch (e: Throwable) {
+            Log.w(TAG, "Failed to write yt-dlp EJS cache plugin", e)
+        }
+    }
+
+    /**
+     * Strips unused yt-dlp metadata (e.g. 160x6 redundant subtitle URLs,
+     * thumbnails array, heatmap, HTTP headers) while preserving every field,
+     * format, and subtitle language consumed by Dart's VideoInfo.fromJson.
+     */
+    private fun compactInfoJson(raw: JSONObject): JSONObject {
+        val out = JSONObject()
+        val topKeys = arrayOf(
+            "id", "title", "channel", "uploader", "channel_url", "uploader_url",
+            "thumbnail", "duration", "description", "view_count", "upload_date",
+            "webpage_url",
+        )
+        for (k in topKeys) {
+            if (raw.has(k) && !raw.isNull(k)) {
+                out.put(k, raw.get(k))
+            }
+        }
+
+        if (raw.has("formats") && !raw.isNull("formats")) {
+            val rawFormats = raw.getJSONArray("formats")
+            val outFormats = org.json.JSONArray()
+            val fmtKeys = arrayOf(
+                "format_id", "format_note", "ext", "width", "height", "fps",
+                "vcodec", "acodec", "filesize", "filesize_approx", "tbr", "abr",
+                "vbr", "dynamic_range", "asr", "language", "url",
+            )
+            for (i in 0 until rawFormats.length()) {
+                val src = rawFormats.getJSONObject(i)
+                val dst = JSONObject()
+                for (k in fmtKeys) {
+                    if (src.has(k) && !src.isNull(k)) {
+                        dst.put(k, src.get(k))
+                    }
+                }
+                outFormats.put(dst)
+            }
+            out.put("formats", outFormats)
+        }
+
+        compactSubtitleMap(raw, out, "subtitles")
+        compactSubtitleMap(raw, out, "automatic_captions")
+        return out
+    }
+
+    private fun compactSubtitleMap(raw: JSONObject, out: JSONObject, key: String) {
+        if (!raw.has(key) || raw.isNull(key)) return
+        val srcMap = raw.optJSONObject(key) ?: return
+        val dstMap = JSONObject()
+        val langs = srcMap.keys()
+        while (langs.hasNext()) {
+            val lang = langs.next()
+            val list = srcMap.optJSONArray(lang)
+            val dstList = org.json.JSONArray()
+            if (list != null && list.length() > 0) {
+                val first = list.optJSONObject(0)
+                if (first != null) {
+                    val item = JSONObject()
+                    if (first.has("name") && !first.isNull("name")) item.put("name", first.get("name"))
+                    if (first.has("ext") && !first.isNull("ext")) item.put("ext", first.get("ext"))
+                    dstList.put(item)
+                }
+            }
+            dstMap.put(lang, dstList)
+        }
+        out.put(key, dstMap)
+    }
+
+    private const val EJS_CACHE_PLUGIN_SOURCE = """import os
+import sys
+
+try:
+    from yt_dlp.extractor.youtube.jsc._builtin.ejs import EJSBaseJCP
+    EJSBaseJCP._ENABLE_PREPROCESSED_PLAYER_CACHE = True
+except Exception:
+    pass
+
+
+def _prune_challenge_cache():
+    try:
+        argv = sys.argv
+        if '--cache-dir' not in argv:
+            return
+        idx = argv.index('--cache-dir')
+        if idx + 1 >= len(argv):
+            return
+        cache_dir = os.path.join(argv[idx + 1], 'challenge-solver')
+        if not os.path.isdir(cache_dir):
+            return
+        players = []
+        for name in os.listdir(cache_dir):
+            if name.startswith('player') and name.endswith('.json'):
+                p = os.path.join(cache_dir, name)
+                try:
+                    players.append((os.path.getmtime(p), p))
+                except OSError:
+                    pass
+        if len(players) > 3:
+            players.sort(reverse=True)
+            for _, old_path in players[3:]:
+                try:
+                    os.remove(old_path)
+                except OSError:
+                    pass
+    except Exception:
+        pass
+
+
+_prune_challenge_cache()
+"""
 
     private fun buildErrorDetail(e: Throwable): String {
         val errorMsg = "${e.javaClass.name}: ${e.message ?: "Unknown error"}"

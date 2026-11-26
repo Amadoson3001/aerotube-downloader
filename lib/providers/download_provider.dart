@@ -15,6 +15,7 @@ import '../models/download_mode.dart';
 import '../core/constants/app_constants.dart';
 import '../core/utils/downloaded_file_finder.dart';
 import '../core/utils/error_helper.dart';
+import 'download_utils.dart';
 
 class DownloadProvider extends ChangeNotifier with WidgetsBindingObserver {
   final dynamic _ytdlpService;
@@ -359,11 +360,7 @@ class DownloadProvider extends ChangeNotifier with WidgetsBindingObserver {
           unawaited(_downloadsBox.delete(key).catchError((Object _, StackTrace __) {}));
         }
       }
-      loaded.sort(
-        (a, b) => (b.completedDate ?? DateTime.now()).compareTo(
-          a.completedDate ?? DateTime.now(),
-        ),
-      );
+      loaded.sort(compareHistoryNewestFirst);
       _historyDownloads = loaded;
     } catch (e, stackTrace) {
       // Reading keys/values itself threw (box-level corruption).
@@ -392,6 +389,19 @@ class DownloadProvider extends ChangeNotifier with WidgetsBindingObserver {
     return _cachedActiveDownloads!;
   }
 
+  /// Ordered list of active download IDs for targeted list-slot subscriptions.
+  List<String> get activeDownloadIds =>
+      activeDownloads.map((d) => d.id).toList(growable: false);
+
+  /// Look up a single active download by [id] so card widgets can subscribe
+  /// only to their own item updates.
+  DownloadItem? activeDownloadById(String id) {
+    for (final d in _activeDownloads) {
+      if (d.id == id) return d;
+    }
+    return null;
+  }
+
   List<DownloadItem> get historyDownloads {
     if (_historyDirty || _cachedHistoryDownloads == null) {
       _cachedHistoryDownloads = List.unmodifiable(_historyDownloads);
@@ -414,20 +424,11 @@ class DownloadProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   int get activeCount => _activeDownloads.length;
   int get activeRunningCount => _activeDownloads
-      .where(
-        (i) =>
-            i.status == DownloadStatus.downloadingVideo ||
-            i.status == DownloadStatus.downloadingAudio ||
-            i.status == DownloadStatus.merging,
-      )
+      .where((i) => isRunningDownloadStatus(i.status))
       .length;
 
   int get pendingCount => _activeDownloads
-      .where(
-        (i) =>
-            i.status == DownloadStatus.pending ||
-            i.status == DownloadStatus.queued,
-      )
+      .where((i) => isQueuedDownloadStatus(i.status))
       .length;
 
   int get pausedCount =>
@@ -1164,8 +1165,7 @@ class DownloadProvider extends ChangeNotifier with WidgetsBindingObserver {
         }
       }
       entries.sort(
-        (a, b) => (a.value.completedDate ?? DateTime(1970))
-            .compareTo(b.value.completedDate ?? DateTime(1970)),
+        (a, b) => compareHistoryOldestFirst(a.value, b.value),
       );
       final excess = entries.length - 200;
       for (int i = 0; i < excess; i++) {

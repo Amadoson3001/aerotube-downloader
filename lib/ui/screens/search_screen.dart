@@ -1,6 +1,5 @@
 import 'package:material_symbols_icons/symbols.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_animate/flutter_animate.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -118,7 +117,10 @@ class _SearchScreenState extends State<SearchScreen> {
   }
 
   void _openConfig(SearchVideoResult video) {
-    context.read<VideoProvider>().fetchVideoInfo(video.videoUrl);
+    context.read<VideoProvider>().fetchVideoInfo(
+          video.videoUrl,
+          previewHint: video,
+        );
     if (PlatformUtils.isMobile) {
       Navigator.push(
         context,
@@ -540,7 +542,7 @@ class _SearchScreenState extends State<SearchScreen> {
                           color: colors.onSurfaceMuted,
                         ),
                       ),
-              ).animate().fadeIn(duration: 240.ms),
+              ),
             ],
           ),
         ),

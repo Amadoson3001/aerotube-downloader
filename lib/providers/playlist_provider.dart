@@ -2,26 +2,17 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import '../models/playlist_info.dart';
 import '../models/video_info.dart';
-import '../services/ytdlp/ytdlp_service_windows.dart';
-import '../services/ytdlp/ytdlp_service_android.dart';
+import '../services/ytdlp/ytdlp_tool_service.dart';
 import '../services/core/logging_service.dart';
 import '../core/utils/error_helper.dart';
 import 'download_provider.dart';
 import '../models/download_mode.dart';
 
 class PlaylistProvider extends ChangeNotifier {
-  final dynamic
-  _ytdlpService; // YtdlpService (Windows) or YtdlpServiceAndroid (Android)
+  final YtdlpToolService _ytdlpService;
 
-  PlaylistProvider({required dynamic ytdlpService})
-    : _ytdlpService = ytdlpService {
-    if (!(_ytdlpService is YtdlpService ||
-        _ytdlpService is YtdlpServiceAndroid)) {
-      throw ArgumentError(
-        'PlaylistProvider requires YtdlpService (Windows) or YtdlpServiceAndroid (Android).',
-      );
-    }
-  }
+  PlaylistProvider({required YtdlpToolService ytdlpService})
+    : _ytdlpService = ytdlpService;
 
   bool _isLoading = false;
   String? _error;
@@ -84,7 +75,6 @@ class PlaylistProvider extends ChangeNotifier {
     _isLoading = false;
     _loadingStatus = null;
     try {
-      // ignore: avoid_dynamic_calls
       await _ytdlpService.cancelFetch();
     } catch (_) {}
     LoggingService().info('Playlist fetch cancelled by user', component: 'PlaylistProvider');
@@ -114,7 +104,7 @@ class PlaylistProvider extends ChangeNotifier {
           if (myGen != _fetchGen) return;
           _throttledStatus(status);
         },
-      ) as Future<PlaylistInfo>;
+      );
       // C3: service allows 6 minutes for large playlists. Provider must not
       // give up at 90s — that made every large playlist always fail.
       // Cancel the service on timeout so yt-dlp is not left as a zombie.
@@ -129,7 +119,6 @@ class PlaylistProvider extends ChangeNotifier {
         );
       } on TimeoutException {
         try {
-          // ignore: avoid_dynamic_calls
           await _ytdlpService.cancelFetch();
         } catch (_) {}
         rethrow;

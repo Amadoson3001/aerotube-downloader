@@ -6,6 +6,7 @@ export 'aero_dialog.dart';
 export 'aero_progress.dart';
 export 'aero_scaffold.dart';
 export 'aero_segmented_control.dart';
+export 'aero_skeleton.dart';
 export 'aero_snack.dart';
 export 'aero_text_field.dart';
 export 'component_gallery_screen.dart';

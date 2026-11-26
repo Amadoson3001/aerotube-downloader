@@ -1,3 +1,6 @@
+import '../../models/playlist_info.dart';
+import '../../models/video_info.dart';
+
 /// Unified update information for yt-dlp (shared across desktop and Android).
 class YtdlpUpdateInfo {
   final String currentVersion;
@@ -46,4 +49,18 @@ abstract class YtdlpToolService {
   });
   Future<bool> update();
   Future<void> cancelFetch();
+  bool hasCachedVideoInfo(String url);
+  Future<VideoInfo> getVideoInfo(
+    String url, {
+    Function(String status)? onProgress,
+  });
+  Future<PlaylistInfo> getPlaylistInfo(
+    String url, {
+    String? playlistItems,
+    Function(String status)? onProgress,
+  });
+  Future<Map<String, dynamic>> searchVideosRaw(
+    String query, {
+    int limit = 10,
+  });
 }

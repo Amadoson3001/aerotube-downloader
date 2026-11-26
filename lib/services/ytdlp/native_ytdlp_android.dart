@@ -61,16 +61,31 @@ class NativeYtdlpAndroid {
     }
   }
 
+  /// Cancel an in-flight native info/playlist/search fetch by [requestId] (or all).
+  static Future<bool> cancelFetch({String? requestId}) async {
+    try {
+      final result = await _channel
+          .invokeMethod<bool>('cancelFetch', {
+            if (requestId != null) 'request_id': requestId,
+          })
+          .timeout(const Duration(seconds: 5));
+      return result ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// Get video information using youtubedl-android
   static Future<Map<String, dynamic>> getVideoInfo(
     String url, {
     String? cookiesPath,
     String? userAgent,
+    String? requestId,
   }) async {
     try {
       final validatedUrl = _validateUrl(url);
       LoggingService().debug(
-        'getVideoInfo called for: $validatedUrl',
+        'getVideoInfo called for: $validatedUrl (requestId=$requestId)',
         component: 'NativeYtdlpAndroid',
       );
       LoggingService().debug(
@@ -87,6 +102,7 @@ class NativeYtdlpAndroid {
         'url': validatedUrl,
         'cookies_path': cookiesPath,
         'user_agent': userAgent,
+        if (requestId != null) 'request_id': requestId,
       }).timeout(const Duration(seconds: 90));
 
       if (result == null) {
@@ -94,6 +110,12 @@ class NativeYtdlpAndroid {
       }
 
       final parsed = await compute(_decodeJsonMap, result);
+
+      if (parsed['cancelled'] == true) {
+        throw NativeFetchCancelledException(
+          parsed['error']?.toString() ?? 'Fetch cancelled by user',
+        );
+      }
 
       if (parsed['success'] == false) {
         LoggingService().error(
@@ -121,6 +143,7 @@ class NativeYtdlpAndroid {
     String? cookiesPath,
     String? userAgent,
     String? playlistItems,
+    String? requestId,
   }) async {
     try {
       final validatedUrl = _validateUrl(url);
@@ -130,6 +153,7 @@ class NativeYtdlpAndroid {
         'cookies_path': cookiesPath,
         'user_agent': userAgent,
         'playlist_items': playlistItems,
+        if (requestId != null) 'request_id': requestId,
       }).timeout(const Duration(seconds: 90));
 
       if (result == null) {
@@ -137,6 +161,12 @@ class NativeYtdlpAndroid {
       }
 
       final parsed = await compute(_decodeJsonMap, result);
+
+      if (parsed['cancelled'] == true) {
+        throw NativeFetchCancelledException(
+          parsed['error']?.toString() ?? 'Fetch cancelled by user',
+        );
+      }
 
       if (parsed['success'] == false) {
         throw Exception(parsed['error'] ?? 'Unknown error');
@@ -156,6 +186,7 @@ class NativeYtdlpAndroid {
     int limit = 10,
     String? cookiesPath,
     String? userAgent,
+    String? requestId,
   }) async {
     try {
       // Search query is not a URL — validate non-empty only.
@@ -168,6 +199,7 @@ class NativeYtdlpAndroid {
         'limit': limit,
         'cookies_path': cookiesPath,
         'user_agent': userAgent,
+        if (requestId != null) 'request_id': requestId,
       }).timeout(const Duration(seconds: 60));
 
       if (result == null) {
@@ -175,6 +207,11 @@ class NativeYtdlpAndroid {
       }
 
       final parsed = await compute(_decodeJsonMap, result);
+      if (parsed['cancelled'] == true) {
+        throw NativeFetchCancelledException(
+          parsed['error']?.toString() ?? 'Fetch cancelled by user',
+        );
+      }
       if (parsed['success'] == false) {
         throw Exception(parsed['error'] ?? 'Unknown error');
       }
@@ -306,4 +343,11 @@ class NativeYtdlpAndroid {
   static Stream<Map<String, dynamic>> progressForProcess(String processId) {
     return downloadEvents.where((event) => event['process_id'] == processId);
   }
+}
+
+class NativeFetchCancelledException implements Exception {
+  final String message;
+  NativeFetchCancelledException(this.message);
+  @override
+  String toString() => 'NativeFetchCancelledException: $message';
 }

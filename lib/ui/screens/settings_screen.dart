@@ -1,8 +1,8 @@
 import 'package:material_symbols_icons/symbols.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show ScrollCacheExtent;
 import 'package:flutter/services.dart';
-import 'package:flutter_animate/flutter_animate.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:provider/provider.dart';
 
@@ -38,6 +38,8 @@ import '../widgets/floating_progress_overlay.dart';
 import '../widgets/logs_viewer.dart';
 import '../widgets/update_dialog.dart';
 
+part 'settings_rows.dart';
+
 /// Redesigned AeroTube Settings Screen following Section 7.5 of the Redesign Spec.
 ///
 /// Features:
@@ -64,6 +66,7 @@ class _SettingsScreenState extends State<SettingsScreen>
     with WidgetsBindingObserver {
   String _appVersion = '';
   final TextEditingController _searchController = TextEditingController();
+  final ScrollController _scrollController = ScrollController();
   String _searchFilter = '';
 
   @override
@@ -84,6 +87,7 @@ class _SettingsScreenState extends State<SettingsScreen>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _searchController.dispose();
+    _scrollController.dispose();
     super.dispose();
   }
 
@@ -98,41 +102,64 @@ class _SettingsScreenState extends State<SettingsScreen>
   }
 
   Future<void> _loadAppVersion() async {
-    final info = await PackageInfo.fromPlatform();
-    if (mounted) {
-      setState(() {
-        _appVersion = info.version;
-      });
+    try {
+      final info = await PackageInfo.fromPlatform();
+      if (mounted) {
+        setState(() {
+          _appVersion = info.version;
+        });
+      }
+    } catch (_) {
+      // Ignore platform version lookup failures (e.g. headless test runners).
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final settingsProvider = context.watch<PlatformSettingsProvider>();
-    final updateProvider = context.watch<UpdateProvider>();
+    final visibility = context
+        .select<
+          PlatformSettingsProvider,
+          ({
+            bool isAndroid,
+            bool enableCookies,
+            bool isYouTubeLoggedIn,
+            bool isAggressiveOem,
+          })
+        >(
+          (p) => (
+            isAndroid: p.isAndroid,
+            enableCookies: p.enableCookies,
+            isYouTubeLoggedIn: p.isYouTubeLoggedIn,
+            isAggressiveOem: p.isAggressiveOem,
+          ),
+        );
     final isDesktop = !PlatformUtils.isMobile;
-
-    final contentList = _buildFilteredSections(
-      context,
-      settingsProvider,
-      updateProvider,
-    );
+    final rows = _buildVisibleRows(context, visibility);
+    final rowIndices = <Key, int>{
+      for (var i = 0; i < rows.length; i++)
+        ValueKey('settings_item_${rows[i].id}'): i,
+    };
 
     Widget body = CustomScrollView(
+      key: const PageStorageKey('settings_scroll'),
+      controller: _scrollController,
+      // Prepare nearby rows before they enter the viewport. Visited rows are
+      // retained by _RetainedSettingsRow, so reversing direction reuses them.
+      scrollCacheExtent: const ScrollCacheExtent.viewport(1),
+      keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
       slivers: [
         SliverPadding(
           padding: EdgeInsets.symmetric(
             horizontal: isDesktop ? AeroSpace.xxl : AeroSpace.lg,
             vertical: AeroSpace.lg,
           ),
-          sliver: SliverList(
-            delegate: SliverChildListDelegate([
-              _buildHeader(context),
-              const SizedBox(height: AeroSpace.lg),
-              _buildSearchField(context),
-              ...contentList,
-              const SizedBox(height: AeroSpace.xxl * 2),
-            ]),
+          sliver: SliverList.builder(
+            itemCount: rows.length,
+            findChildIndexCallback: (key) => rowIndices[key],
+            itemBuilder: (context, index) => _RetainedSettingsRow(
+              key: ValueKey('settings_item_${rows[index].id}'),
+              row: rows[index],
+            ),
           ),
         ),
       ],
@@ -227,234 +254,142 @@ class _SettingsScreenState extends State<SettingsScreen>
     );
   }
 
-  List<Widget> _buildFilteredSections(
+  List<_LazySettingsRow> _buildVisibleRows(
     BuildContext context,
-    PlatformSettingsProvider settingsProvider,
-    UpdateProvider updateProvider,
+    ({
+      bool isAndroid,
+      bool enableCookies,
+      bool isYouTubeLoggedIn,
+      bool isAggressiveOem,
+    })
+    visibility,
   ) {
-    final q = _searchFilter.toLowerCase();
+    final q = _searchFilter.trim().toLowerCase();
+    final rows = <_LazySettingsRow>[
+      _WidgetSettingsRow('header', (ctx) => _buildHeader(ctx)),
+      _WidgetSettingsRow(
+        'search_gap',
+        (_) => const SizedBox(height: AeroSpace.lg),
+      ),
+      _WidgetSettingsRow('search', (ctx) => _buildSearchField(ctx)),
+    ];
 
-    final accountItems = _getAccountItems(context, settingsProvider);
-    final downloadsItems = _getDownloadsItems(context, settingsProvider);
-    final appearanceItems = _getAppearanceItems(context, settingsProvider);
-    final toolsItems = _getToolsItems(context, settingsProvider);
-    final backgroundItems = _getBackgroundItems(context, settingsProvider);
-    final advancedItems = _getAdvancedItems(context, settingsProvider);
-    final aboutItems = _getAboutItems(
-      context,
-      settingsProvider,
-      updateProvider,
-    );
+    final sections = <({String title, List<_SettingItemSpec> items})>[
+      (title: 'Tools', items: _getToolsSpecs()),
+      (title: 'Account', items: _getAccountSpecs(visibility)),
+      (title: 'Downloads', items: _getDownloadsSpecs(visibility)),
+      (title: 'Appearance', items: _getAppearanceSpecs()),
+      (
+        title: 'Notifications & Background',
+        items: _getBackgroundSpecs(visibility),
+      ),
+      (title: 'Advanced', items: _getAdvancedSpecs()),
+      (title: 'About', items: _getAboutSpecs()),
+    ];
 
-    final filteredAccount = accountItems.where((i) => i.matches(q)).toList();
-    final filteredDownloads = downloadsItems
-        .where((i) => i.matches(q))
-        .toList();
-    final filteredAppearance = appearanceItems
-        .where((i) => i.matches(q))
-        .toList();
-    final filteredTools = toolsItems.where((i) => i.matches(q)).toList();
-    final filteredBackground = backgroundItems
-        .where((i) => i.matches(q))
-        .toList();
-    final filteredAdvanced = advancedItems.where((i) => i.matches(q)).toList();
-    final filteredAbout = aboutItems.where((i) => i.matches(q)).toList();
+    var hasAnyMatch = false;
+    var hasAboutMatch = false;
 
-    final hasAnyMatch =
-        filteredAccount.isNotEmpty ||
-        filteredDownloads.isNotEmpty ||
-        filteredAppearance.isNotEmpty ||
-        filteredTools.isNotEmpty ||
-        filteredBackground.isNotEmpty ||
-        filteredAdvanced.isNotEmpty ||
-        filteredAbout.isNotEmpty;
+    for (final section in sections) {
+      // Filter lightweight metadata BEFORE constructing any row widget.
+      final matching = q.isEmpty
+          ? section.items
+          : section.items.where((spec) => spec.matches(q)).toList();
+      if (matching.isEmpty) continue;
+      hasAnyMatch = true;
+      if (section.title == 'About') hasAboutMatch = true;
 
-    if (!hasAnyMatch && q.isNotEmpty) {
-      return [
-        Padding(
-          padding: const EdgeInsets.only(top: AeroSpace.xxl),
-          child: EmptyState(
-            icon: Symbols.search_off_rounded,
-            title: 'No Settings Found',
-            description: 'No settings match "$_searchFilter"',
-            actionLabel: 'Clear Filter',
-            onAction: () {
-              _searchController.clear();
-              setState(() => _searchFilter = '');
-            },
+      rows.add(_SectionHeaderSettingsRow(section.title));
+      for (var i = 0; i < matching.length; i++) {
+        rows.add(
+          _CardItemSettingsRow(
+            spec: matching[i],
+            isFirst: i == 0,
+            isLast: i == matching.length - 1,
           ),
-        ),
-      ];
-    }
-
-    final List<Widget> sections = [];
-
-    if (filteredTools.isNotEmpty) {
-      sections.add(const SectionHeader(title: 'Tools'));
-      sections.add(
-        _buildSettingsSection(
-          context,
-          filteredTools.map((i) => i.widget).toList(),
-        ),
-      );
-    }
-
-    if (filteredAccount.isNotEmpty) {
-      sections.add(const SectionHeader(title: 'Account'));
-      sections.add(
-        _buildSettingsSection(
-          context,
-          filteredAccount.map((i) => i.widget).toList(),
-        ),
-      );
-    }
-
-    if (filteredDownloads.isNotEmpty) {
-      sections.add(const SectionHeader(title: 'Downloads'));
-      sections.add(
-        _buildSettingsSection(
-          context,
-          filteredDownloads.map((i) => i.widget).toList(),
-        ),
-      );
-    }
-
-    if (filteredAppearance.isNotEmpty) {
-      sections.add(const SectionHeader(title: 'Appearance'));
-      sections.add(
-        _buildSettingsSection(
-          context,
-          filteredAppearance.map((i) => i.widget).toList(),
-        ),
-      );
-    }
-
-    if (filteredBackground.isNotEmpty) {
-      sections.add(const SectionHeader(title: 'Notifications & Background'));
-      sections.add(
-        _buildSettingsSection(
-          context,
-          filteredBackground.map((i) => i.widget).toList(),
-        ),
-      );
-    }
-
-    if (filteredAdvanced.isNotEmpty) {
-      sections.add(const SectionHeader(title: 'Advanced'));
-      sections.add(
-        _buildSettingsSection(
-          context,
-          filteredAdvanced.map((i) => i.widget).toList(),
-        ),
-      );
-    }
-
-    if (filteredAbout.isNotEmpty) {
-      sections.add(const SectionHeader(title: 'About'));
-      sections.add(
-        _buildSettingsSection(
-          context,
-          filteredAbout.map((i) => i.widget).toList(),
-        ),
-      );
-      sections.add(const SizedBox(height: AeroSpace.xl));
-      sections.add(_buildAboutFooter(context));
-    }
-
-    return sections;
-  }
-
-  Widget _buildSettingsSection(BuildContext context, List<Widget> children) {
-    final colors = context.aero;
-    final List<Widget> withDividers = [];
-
-    for (int i = 0; i < children.length; i++) {
-      withDividers.add(children[i]);
-      if (i < children.length - 1) {
-        withDividers.add(
-          Divider(height: 1, thickness: 1, indent: 56, color: colors.outline),
         );
       }
     }
 
-    return Container(
-      decoration: BoxDecoration(
-        color: colors.surface1,
-        borderRadius: AeroRadius.lgBorderRadius,
-        border: Border.all(color: colors.outline, width: 1.0),
-      ),
-      clipBehavior: Clip.antiAlias,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        mainAxisSize: MainAxisSize.min,
-        children: withDividers,
-      ),
-    );
-  }
-
-  // =========================================================================
-  // SECTION ITEMS
-  // =========================================================================
-
-  List<_SettingEntry> _getAccountItems(
-    BuildContext context,
-    PlatformSettingsProvider provider,
-  ) {
-    final isSignedIn = provider.isYouTubeLoggedIn;
-    final cookiesReady = provider.isCookieActive;
-    final statusLabel = isSignedIn
-        ? 'Signed in'
-        : cookiesReady
-        ? 'Cookies ready'
-        : 'Guest';
-    final statusSubtitle = isSignedIn
-        ? provider.enableCookies
-              ? 'YouTube session ready'
-              : 'Signed in · cookies are off'
-        : cookiesReady
-        ? 'Cookie source ready'
-        : 'Optional for members-only videos';
-
-    return [
-      _SettingEntry(
-        title: 'Account Status',
-        subtitle: statusSubtitle,
-        keywords: ['status', 'google', 'profile', 'auth', 'signed in', 'guest'],
-        widget: SettingsRow(
-          title: 'Account Status',
-          subtitle: statusSubtitle,
-          icon: isSignedIn || cookiesReady
-              ? Symbols.lock_open_rounded
-              : Symbols.lock_rounded,
-          iconColor: isSignedIn || cookiesReady ? Colors.green : null,
-          trailing: StatusPill(
-            label: statusLabel,
-            type: isSignedIn || cookiesReady
-                ? StatusPillType.success
-                : StatusPillType.neutral,
+    if (!hasAnyMatch && q.isNotEmpty) {
+      rows.add(
+        _WidgetSettingsRow(
+          'empty',
+          (_) => Padding(
+            padding: const EdgeInsets.only(top: AeroSpace.xxl),
+            child: EmptyState(
+              icon: Symbols.search_off_rounded,
+              title: 'No Settings Found',
+              description: 'No settings match "$_searchFilter"',
+              actionLabel: 'Clear Filter',
+              onAction: () {
+                _searchController.clear();
+                setState(() => _searchFilter = '');
+              },
+            ),
           ),
         ),
+      );
+    } else if (hasAboutMatch) {
+      rows.add(
+        _WidgetSettingsRow(
+          'footer_gap',
+          (_) => const SizedBox(height: AeroSpace.xl),
+        ),
+      );
+      rows.add(_WidgetSettingsRow('footer', (ctx) => _buildAboutFooter(ctx)));
+    }
+
+    rows.add(
+      _WidgetSettingsRow(
+        'bottom_gap',
+        (_) => const SizedBox(height: AeroSpace.xxl * 2),
       ),
-      _SettingEntry(
+    );
+    return rows;
+  }
+
+  List<_SettingItemSpec> _getAccountSpecs(
+    ({
+      bool isAndroid,
+      bool enableCookies,
+      bool isYouTubeLoggedIn,
+      bool isAggressiveOem,
+    })
+    visibility,
+  ) {
+    return [
+      _SettingItemSpec(
+        id: 'account_status',
+        title: 'Account Status',
+        description: 'YouTube session and cookie authentication status',
+        keywords: ['status', 'google', 'profile', 'auth', 'signed in', 'guest'],
+        builder: (_) => const _AccountStatusRow(),
+      ),
+      _SettingItemSpec(
+        id: 'youtube_login',
         title: 'Sign in with YouTube',
-        subtitle: 'Access members-only videos',
+        description: 'Access members-only videos',
         keywords: ['login', 'sign in', 'authenticate', 'webview', 'channel'],
-        widget: SettingsRow(
+        builder: (ctx) => SettingsRow(
           title: 'Sign in with YouTube',
           subtitle: 'Access members-only videos',
           icon: Symbols.login_rounded,
           onTap: () async {
-            final result = await Navigator.pushNamed(context, '/youtube_login');
-            if (result == true) {
-              await provider.onYouTubeLoginComplete();
+            final result = await Navigator.pushNamed(ctx, '/youtube_login');
+            if (result == true && ctx.mounted) {
+              await ctx
+                  .read<PlatformSettingsProvider>()
+                  .onYouTubeLoginComplete();
             }
           },
         ),
       ),
-      if (!provider.isAndroid)
-        _SettingEntry(
+      if (!visibility.isAndroid)
+        _SettingItemSpec(
+          id: 'browser_cookies',
           title: 'Browser Cookies',
-          subtitle: _getBrowserLabel(provider.settings.cookieBrowser),
+          description: 'Select browser profile for YouTube cookies',
           keywords: [
             'chrome',
             'firefox',
@@ -463,56 +398,36 @@ class _SettingsScreenState extends State<SettingsScreen>
             'cookies',
             'browser',
           ],
-          widget: SettingsRow(
-            title: 'Browser Cookies',
-            subtitle: _getBrowserLabel(provider.settings.cookieBrowser),
-            icon: Symbols.cookie_rounded,
-            onTap: () => _showBrowserSheet(context, provider),
-          ),
+          builder: (_) => _BrowserCookiesRow(host: this),
         ),
-      _SettingEntry(
+      _SettingItemSpec(
+        id: 'enable_cookies',
         title: 'Enable Cookies File',
-        subtitle: 'Import Netscape format cookies.txt',
+        description: 'Import Netscape format cookies.txt',
         keywords: ['cookies.txt', 'netscape', 'cookie', 'file'],
-        widget: SettingsRow(
+        builder: (_) => _SettingsSwitchRow(
           title: 'Enable Cookies File',
           subtitle: 'Import Netscape format cookies.txt',
           icon: Symbols.file_copy_rounded,
-          trailing: Switch.adaptive(
-            value: provider.enableCookies,
-            activeThumbColor: context.aero.primary,
-            activeTrackColor: context.aero.primarySoft,
-            onChanged: provider.setEnableCookies,
-          ),
-          onTap: () => provider.setEnableCookies(!provider.enableCookies),
+          selector: (p) => p.enableCookies,
+          onChanged: (p, v) => p.setEnableCookies(v),
         ),
       ),
-      if (provider.enableCookies)
-        _SettingEntry(
+      if (visibility.enableCookies)
+        _SettingItemSpec(
+          id: 'import_cookies',
           title: 'Import cookies.txt',
-          subtitle: provider.cookieFileName ?? 'No file selected',
+          description: 'Select Netscape cookies.txt file',
           keywords: ['upload', 'cookies.txt', 'netscape', 'import'],
-          widget: SettingsRow(
-            title: 'Import cookies.txt',
-            subtitle: provider.cookieFileName ?? 'No file selected',
-            icon: Symbols.upload_file_rounded,
-            onTap: () async {
-              final result = await FilePicker.pickFile(
-                type: FileType.custom,
-                allowedExtensions: ['txt'],
-              );
-              if (result?.path != null) {
-                provider.setCookiePath(result!.path);
-              }
-            },
-          ),
+          builder: (_) => const _ImportCookiesRow(),
         ),
-      if (isSignedIn)
-        _SettingEntry(
+      if (visibility.isYouTubeLoggedIn)
+        _SettingItemSpec(
+          id: 'logout_youtube',
           title: 'Log out of YouTube',
-          subtitle: 'Disconnect YouTube account and remove active session',
+          description: 'Disconnect YouTube account and remove active session',
           keywords: ['logout', 'sign out', 'disconnect', 'leave', 'remove'],
-          widget: Padding(
+          builder: (ctx) => Padding(
             padding: const EdgeInsets.symmetric(
               horizontal: AeroSpace.lg,
               vertical: AeroSpace.md,
@@ -523,7 +438,8 @@ class _SettingsScreenState extends State<SettingsScreen>
                   text: 'Log out of YouTube',
                   icon: const Icon(Symbols.logout_rounded, size: 16),
                   density: AeroDensity.compact,
-                  onPressed: () => _confirmLogout(context, provider),
+                  onPressed: () =>
+                      _confirmLogout(ctx, ctx.read<PlatformSettingsProvider>()),
                 ),
               ],
             ),
@@ -532,54 +448,37 @@ class _SettingsScreenState extends State<SettingsScreen>
     ];
   }
 
-  List<_SettingEntry> _getDownloadsItems(
-    BuildContext context,
-    PlatformSettingsProvider provider,
+  List<_SettingItemSpec> _getDownloadsSpecs(
+    ({
+      bool isAndroid,
+      bool enableCookies,
+      bool isYouTubeLoggedIn,
+      bool isAggressiveOem,
+    })
+    visibility,
   ) {
     return [
-      _SettingEntry(
+      _SettingItemSpec(
+        id: 'download_location',
         title: 'Download Location',
-        subtitle: provider.outputPath ?? 'Default folder',
+        description: 'Choose folder where downloaded media is saved',
         keywords: ['folder', 'directory', 'path', 'save', 'storage', 'output'],
-        widget: SettingsRow(
-          title: 'Download Location',
-          subtitle: provider.outputPath ?? 'Default folder',
-          icon: Symbols.folder_rounded,
-          onTap: () async {
-            // ignore: deprecated_member_use
-            final result = await FilePicker.getDirectoryPath();
-            if (result == null || !context.mounted) return;
-
-            if (provider.isAndroid) {
-              final validation = await AndroidStorageService()
-                  .validateCustomDirectory(result);
-              if (!context.mounted) return;
-              if (!validation.ok) {
-                AeroSnack.warning(
-                  context,
-                  message: validation.reason ?? 'Folder not usable.',
-                );
-                return;
-              }
-            }
-
-            await provider.setOutputPath(result);
-            if (context.mounted) {
-              AeroSnack.success(context, message: 'Download folder updated');
-            }
-          },
-        ),
+        builder: (_) => const _DownloadLocationRow(),
       ),
-      if (provider.isAndroid)
-        _SettingEntry(
+      if (visibility.isAndroid)
+        _SettingItemSpec(
+          id: 'storage_access',
           title: 'Storage Access',
-          subtitle: 'Manage public storage write permissions',
+          description: 'Manage public storage write permissions',
           keywords: ['permission', 'storage', 'sd card', 'android', 'access'],
-          widget: _AndroidStoragePermissionTile(provider: provider),
+          builder: (ctx) => _AndroidStoragePermissionTile(
+            provider: ctx.read<PlatformSettingsProvider>(),
+          ),
         ),
-      _SettingEntry(
+      _SettingItemSpec(
+        id: 'default_quality',
         title: 'Default Quality',
-        subtitle: provider.defaultQuality,
+        description: 'Preferred video resolution or audio-only preset',
         keywords: [
           'resolution',
           '1080p',
@@ -589,34 +488,12 @@ class _SettingsScreenState extends State<SettingsScreen>
           'format',
           'quality',
         ],
-        widget: SettingsRow(
-          title: 'Default Quality',
-          subtitle: provider.defaultQuality,
-          icon: Symbols.high_quality_rounded,
-          trailing: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                provider.defaultQuality,
-                style: AeroText.bodySm.copyWith(
-                  color: context.aero.onSurfaceMuted,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              const SizedBox(width: 4),
-              Icon(
-                Symbols.chevron_right_rounded,
-                size: 20,
-                color: context.aero.onSurfaceMuted,
-              ),
-            ],
-          ),
-          onTap: () => _showQualitySheet(context, provider),
-        ),
+        builder: (_) => _DefaultQualityRow(host: this),
       ),
-      _SettingEntry(
+      _SettingItemSpec(
+        id: 'default_subtitle_language',
         title: 'Default Subtitle Language',
-        subtitle: _subtitleLanguageLabel(provider.defaultSubtitleLanguage),
+        description: 'Preferred subtitle language for downloads',
         keywords: [
           'subtitles',
           'captions',
@@ -625,34 +502,12 @@ class _SettingsScreenState extends State<SettingsScreen>
           'auto',
           'subs',
         ],
-        widget: SettingsRow(
-          title: 'Default Subtitle Language',
-          subtitle: _subtitleLanguageLabel(provider.defaultSubtitleLanguage),
-          icon: Symbols.subtitles_rounded,
-          trailing: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                _subtitleLanguageLabel(provider.defaultSubtitleLanguage),
-                style: AeroText.bodySm.copyWith(
-                  color: context.aero.onSurfaceMuted,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              const SizedBox(width: 4),
-              Icon(
-                Symbols.chevron_right_rounded,
-                size: 20,
-                color: context.aero.onSurfaceMuted,
-              ),
-            ],
-          ),
-          onTap: () => _showDefaultSubtitleLanguageSheet(context, provider),
-        ),
+        builder: (_) => _DefaultSubtitleRow(host: this),
       ),
-      _SettingEntry(
+      _SettingItemSpec(
+        id: 'concurrent_downloads',
         title: 'Concurrent Downloads',
-        subtitle: 'Max parallel background downloads',
+        description: 'Max parallel background downloads',
         keywords: [
           'concurrency',
           'parallel',
@@ -661,11 +516,12 @@ class _SettingsScreenState extends State<SettingsScreen>
           'speed',
           'limit',
         ],
-        widget: const _ConcurrentDownloadsControl(),
+        builder: (_) => const _ConcurrentDownloadsControl(),
       ),
-      _SettingEntry(
+      _SettingItemSpec(
+        id: 'file_naming',
         title: 'File Naming Pattern',
-        subtitle: '%(title)s [%(resolution)s].%(ext)s',
+        description: '%(title)s [%(resolution)s].%(ext)s',
         keywords: [
           'naming',
           'filename',
@@ -674,63 +530,58 @@ class _SettingsScreenState extends State<SettingsScreen>
           'pattern',
           'title',
         ],
-        widget: SettingsRow(
+        builder: (_) => const SettingsRow(
           title: 'File Naming Pattern',
           subtitle: '%(title)s [%(resolution)s].%(ext)s',
           icon: Symbols.badge_rounded,
           trailing: StatusPill(label: 'Standard', type: StatusPillType.neutral),
         ),
       ),
-      _SettingEntry(
+      _SettingItemSpec(
+        id: 'embed_thumbnail',
         title: 'Embed Thumbnail',
-        subtitle: 'Add video thumbnail as cover artwork',
+        description: 'Add video thumbnail as cover artwork',
         keywords: ['cover', 'album art', 'image', 'picture', 'thumbnail'],
-        widget: SettingsRow(
+        builder: (_) => _SettingsSwitchRow(
           title: 'Embed Thumbnail',
           subtitle: 'Add video thumbnail as cover artwork',
           icon: Symbols.image_rounded,
-          trailing: Switch.adaptive(
-            value: provider.embedThumbnail,
-            activeThumbColor: context.aero.primary,
-            activeTrackColor: context.aero.primarySoft,
-            onChanged: provider.setEmbedThumbnail,
-          ),
-          onTap: () => provider.setEmbedThumbnail(!provider.embedThumbnail),
+          selector: (p) => p.embedThumbnail,
+          onChanged: (p, v) => p.setEmbedThumbnail(v),
         ),
       ),
-      _SettingEntry(
+      _SettingItemSpec(
+        id: 'embed_metadata',
         title: 'Embed Metadata',
-        subtitle: 'Include video details and tags in file metadata',
+        description: 'Include video details and tags in file metadata',
         keywords: ['tags', 'artist', 'description', 'info', 'metadata'],
-        widget: SettingsRow(
+        builder: (_) => _SettingsSwitchRow(
           title: 'Embed Metadata',
           subtitle: 'Include video details and tags in file metadata',
           icon: Symbols.info_rounded,
-          trailing: Switch.adaptive(
-            value: provider.embedMetadata,
-            activeThumbColor: context.aero.primary,
-            activeTrackColor: context.aero.primarySoft,
-            onChanged: provider.setEmbedMetadata,
-          ),
-          onTap: () => provider.setEmbedMetadata(!provider.embedMetadata),
+          selector: (p) => p.embedMetadata,
+          onChanged: (p, v) => p.setEmbedMetadata(v),
         ),
       ),
-      _SettingEntry(
+      _SettingItemSpec(
+        id: 'clear_history',
         title: 'Clear Download History',
-        subtitle: 'Remove completed history items without deleting files',
+        description: 'Remove completed history items without deleting files',
         keywords: ['delete', 'remove', 'history', 'clean', 'clear'],
-        widget: Padding(
+        builder: (ctx) => Padding(
           padding: const EdgeInsets.symmetric(
             horizontal: AeroSpace.lg,
             vertical: AeroSpace.md,
           ),
           child: Row(
             children: [
-              AeroButton.danger(
-                text: 'Clear download history',
-                icon: const Icon(Symbols.delete_rounded, size: 16),
-                density: AeroDensity.compact,
-                onPressed: () => _confirmClearHistory(context),
+              Flexible(
+                child: AeroButton.danger(
+                  text: 'Clear download history',
+                  icon: const Icon(Symbols.delete_rounded, size: 16),
+                  density: AeroDensity.compact,
+                  onPressed: () => _confirmClearHistory(ctx),
+                ),
               ),
             ],
           ),
@@ -739,14 +590,12 @@ class _SettingsScreenState extends State<SettingsScreen>
     ];
   }
 
-  List<_SettingEntry> _getAppearanceItems(
-    BuildContext context,
-    PlatformSettingsProvider provider,
-  ) {
+  List<_SettingItemSpec> _getAppearanceSpecs() {
     return [
-      _SettingEntry(
+      _SettingItemSpec(
+        id: 'theme_mode',
         title: 'Theme Mode',
-        subtitle: 'System, Light, Dark, or pure-black AMOLED theme',
+        description: 'System, Light, Dark, or pure-black AMOLED theme',
         keywords: [
           'dark',
           'light',
@@ -759,34 +608,25 @@ class _SettingsScreenState extends State<SettingsScreen>
           'color',
           'theme',
         ],
-        widget: _buildThemeSegmented(context, provider),
+        builder: (_) => const _ThemeSegmentedRow(),
       ),
-      _SettingEntry(
+      _SettingItemSpec(
+        id: 'enable_animations',
         title: 'Enable Animations',
-        subtitle: 'Linear transitions and loading animations',
-        keywords: [
-          'motion',
-          'motion',
-          'transitions',
-          'reduce motion',
-          'animation',
-        ],
-        widget: SettingsRow(
+        description: 'Linear transitions and loading animations',
+        keywords: ['motion', 'transitions', 'reduce motion', 'animation'],
+        builder: (_) => _SettingsSwitchRow(
           title: 'Enable Animations',
           subtitle: 'Linear transitions and loading animations',
           icon: Symbols.animation_rounded,
-          trailing: Switch.adaptive(
-            value: provider.enableAnimations,
-            activeThumbColor: context.aero.primary,
-            activeTrackColor: context.aero.primarySoft,
-            onChanged: provider.setEnableAnimations,
-          ),
-          onTap: () => provider.setEnableAnimations(!provider.enableAnimations),
+          selector: (p) => p.enableAnimations,
+          onChanged: (p, v) => p.setEnableAnimations(v),
         ),
       ),
-      _SettingEntry(
+      _SettingItemSpec(
+        id: 'interface_density',
         title: 'Interface Density',
-        subtitle: PlatformUtils.isMobile
+        description: PlatformUtils.isMobile
             ? 'Comfortable (Optimized for touch)'
             : 'Compact (Optimized for pointer & keyboard)',
         keywords: [
@@ -797,7 +637,7 @@ class _SettingsScreenState extends State<SettingsScreen>
           'scale',
           'size',
         ],
-        widget: SettingsRow(
+        builder: (_) => SettingsRow(
           title: 'Interface Density',
           subtitle: PlatformUtils.isMobile
               ? 'Comfortable (Optimized for touch)'
@@ -811,135 +651,12 @@ class _SettingsScreenState extends State<SettingsScreen>
     ];
   }
 
-  Widget _buildThemeSegmented(
-    BuildContext context,
-    PlatformSettingsProvider provider,
-  ) {
-    final current = provider.themeMode;
-    final amoledSelected = provider.amoledDark && current == ThemeMode.dark;
-
-    final chips = <Widget>[
-      AeroChip(
-        text: 'Auto',
-        icon: const Icon(Symbols.auto_mode_rounded),
-        selected: current == ThemeMode.system,
-        onTap: () {
-          provider.setAmoledDark(false);
-          provider.setThemeMode(ThemeMode.system);
-        },
-      ),
-      AeroChip(
-        text: 'Light',
-        icon: const Icon(Symbols.light_mode_rounded),
-        selected: current == ThemeMode.light,
-        onTap: () {
-          provider.setAmoledDark(false);
-          provider.setThemeMode(ThemeMode.light);
-        },
-      ),
-      AeroChip(
-        text: 'Dark',
-        icon: const Icon(Symbols.dark_mode_rounded),
-        selected: current == ThemeMode.dark && !amoledSelected,
-        onTap: () {
-          provider.setAmoledDark(false);
-          provider.setThemeMode(ThemeMode.dark);
-        },
-      ),
-      AeroChip(
-        text: 'AMOLED',
-        icon: const Icon(Symbols.contrast_rounded),
-        selected: amoledSelected,
-        onTap: () {
-          provider.setThemeMode(ThemeMode.dark);
-          provider.setAmoledDark(true);
-        },
-      ),
-    ];
-
-    final String description;
-    if (amoledSelected) {
-      description =
-          'Pure black background — saves battery on OLED/AMOLED screens.';
-    } else if (current == ThemeMode.system) {
-      description = 'Follows your device theme setting.';
-    } else if (current == ThemeMode.light) {
-      description = 'Always uses the light palette.';
-    } else {
-      description = 'Deep navy greys that are easier on the eyes at night.';
-    }
-
-    return Padding(
-      padding: const EdgeInsets.all(AeroSpace.md),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Container(
-                width: 36,
-                height: 36,
-                decoration: BoxDecoration(
-                  color: context.aero.surface2,
-                  borderRadius: AeroRadius.smBorderRadius,
-                  border: Border.all(color: context.aero.outline, width: 1.0),
-                ),
-                alignment: Alignment.center,
-                child: Icon(
-                  Symbols.palette_rounded,
-                  size: 20,
-                  color: context.aero.onSurface,
-                ),
-              ),
-              const SizedBox(width: AeroSpace.md),
-              Text(
-                'Theme Mode',
-                style: AeroText.body.copyWith(fontWeight: FontWeight.w600),
-              ),
-            ],
-          ),
-          const SizedBox(height: AeroSpace.md),
-          // Narrow phones can't fit four chips side by side; wrap to two rows
-          // instead of clipping.
-          LayoutBuilder(
-            builder: (context, constraints) {
-              if (constraints.maxWidth < 440) {
-                return Wrap(
-                  spacing: AeroSpace.sm,
-                  runSpacing: AeroSpace.sm,
-                  children: chips,
-                );
-              }
-              return Row(
-                children: [
-                  for (var i = 0; i < chips.length; i++) ...[
-                    if (i > 0) const SizedBox(width: AeroSpace.sm),
-                    Expanded(child: chips[i]),
-                  ],
-                ],
-              );
-            },
-          ),
-          const SizedBox(height: AeroSpace.sm),
-          Text(
-            description,
-            style: AeroText.caption.copyWith(
-              color: context.aero.onSurfaceMuted,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  List<_SettingEntry> _getToolsItems(
-    BuildContext context,
-    PlatformSettingsProvider provider,
-  ) {
+  List<_SettingItemSpec> _getToolsSpecs() {
     return [
-      _SettingEntry(
+      _SettingItemSpec(
+        id: 'tool_ytdlp',
         title: 'yt-dlp',
-        subtitle: 'Core video download engine',
+        description: 'Core video download engine',
         keywords: [
           'ytdlp',
           'binary',
@@ -948,37 +665,12 @@ class _SettingsScreenState extends State<SettingsScreen>
           'downloader',
           'core',
         ],
-        widget: Consumer<ToolUpdateProvider>(
-          builder: (context, toolProvider, _) {
-            final state = toolProvider.ytdlpState;
-            return _buildToolRow(
-              context,
-              toolName: 'yt-dlp',
-              icon: Symbols.terminal_rounded,
-              state: state,
-              version: provider.ytdlpVersion,
-              onCheckUpdate: () =>
-                  toolProvider.checkYtdlpForUpdate(force: true),
-              onUpdate: state.hasUpdate
-                  ? () => toolProvider.updateYtdlp()
-                  : null,
-              onCancel: state.isBusy
-                  ? () => toolProvider.cancelYtdlpUpdate()
-                  : null,
-              onInstall: () => toolProvider.installYtdlp(),
-              onAdvanced: () => _showToolAdvancedSheet(
-                context,
-                provider,
-                toolProvider,
-                'yt-dlp',
-              ),
-            );
-          },
-        ),
+        builder: (_) => _ToolStatusRow(host: this, isYtdlp: true),
       ),
-      _SettingEntry(
+      _SettingItemSpec(
+        id: 'tool_ffmpeg',
         title: 'FFmpeg',
-        subtitle: 'Media stream merge and format conversion engine',
+        description: 'Media stream merge and format conversion engine',
         keywords: [
           'ffmpeg',
           'binary',
@@ -988,33 +680,185 @@ class _SettingsScreenState extends State<SettingsScreen>
           'audio',
           'convert',
         ],
-        widget: Consumer<ToolUpdateProvider>(
-          builder: (context, toolProvider, _) {
-            final state = toolProvider.ffmpegState;
-            return _buildToolRow(
-              context,
-              toolName: 'FFmpeg',
-              icon: Symbols.video_settings_rounded,
-              state: state,
-              version: provider.ffmpegVersion,
-              onCheckUpdate: () =>
-                  toolProvider.checkFfmpegForUpdate(force: true),
-              onUpdate: state.hasUpdate
-                  ? () => toolProvider.updateFfmpeg()
-                  : null,
-              onCancel: state.isBusy
-                  ? () => toolProvider.cancelFfmpegUpdate()
-                  : null,
-              onInstall: () => toolProvider.installFfmpeg(),
-              onAdvanced: () => _showToolAdvancedSheet(
-                context,
-                provider,
-                toolProvider,
-                'FFmpeg',
-              ),
-            );
-          },
+        builder: (_) => _ToolStatusRow(host: this, isYtdlp: false),
+      ),
+    ];
+  }
+
+  List<_SettingItemSpec> _getBackgroundSpecs(
+    ({
+      bool isAndroid,
+      bool enableCookies,
+      bool isYouTubeLoggedIn,
+      bool isAggressiveOem,
+    })
+    visibility,
+  ) {
+    return [
+      _SettingItemSpec(
+        id: 'download_notifications',
+        title: 'Download Notifications',
+        description: 'Show system alerts on download progress and completion',
+        keywords: ['alerts', 'push', 'notifications', 'tray', 'background'],
+        builder: (_) => _SettingsSwitchRow(
+          title: 'Download Notifications',
+          subtitle: 'Show system alerts on download progress and completion',
+          icon: Symbols.notifications_rounded,
+          selector: (p) => p.enableNotifications,
+          onChanged: (p, v) => p.setEnableNotifications(v),
         ),
+      ),
+      _SettingItemSpec(
+        id: 'sponsorblock',
+        title: 'SponsorBlock',
+        description:
+            'Automatically skip sponsored segments and non-music sections',
+        keywords: [
+          'skip',
+          'sponsors',
+          'segments',
+          'intro',
+          'outro',
+          'sponsorblock',
+        ],
+        builder: (_) => _SettingsSwitchRow(
+          title: 'SponsorBlock',
+          subtitle:
+              'Automatically skip sponsored segments and non-music sections',
+          icon: Symbols.skip_next_rounded,
+          selector: (p) => p.sponsorBlockEnabled,
+          onChanged: (p, v) => p.setSponsorBlockEnabled(v),
+        ),
+      ),
+      if (visibility.isAndroid)
+        _SettingItemSpec(
+          id: 'unrestricted_battery',
+          title: 'Unrestricted Battery',
+          description: 'Allow background downloads when the screen is locked',
+          keywords: ['battery', 'unrestricted', 'doze', 'pause', 'screen off'],
+          builder: (_) => _BatteryOptimizationRow(host: this),
+        ),
+      if (visibility.isAndroid && visibility.isAggressiveOem)
+        _SettingItemSpec(
+          id: 'oem_autostart',
+          title: 'OEM Autostart Settings',
+          description: 'Configure device-specific background whitelist',
+          keywords: [
+            'autostart',
+            'xiaomi',
+            'samsung',
+            'oppo',
+            'vivo',
+            'huawei',
+          ],
+          builder: (_) => const _OemAutostartRow(),
+        ),
+      _SettingItemSpec(
+        id: 'download_archive',
+        title: 'Download Archive',
+        description: 'Track downloaded video IDs to avoid duplicate downloads',
+        keywords: [
+          'archive',
+          'duplicate',
+          'history',
+          're-download',
+          'skip existing',
+        ],
+        builder: (_) => _SettingsSwitchRow(
+          title: 'Download Archive',
+          subtitle: 'Track downloaded video IDs to avoid duplicate downloads',
+          icon: Symbols.history_rounded,
+          selector: (p) => p.useDownloadArchive,
+          onChanged: (p, v) => p.setUseDownloadArchive(v),
+        ),
+      ),
+    ];
+  }
+
+  List<_SettingItemSpec> _getAdvancedSpecs() {
+    return [
+      _SettingItemSpec(
+        id: 'component_gallery',
+        title: 'Component Gallery',
+        description: 'Interactive catalog of all Aero design system widgets',
+        keywords: ['components', 'gallery', 'design', 'tokens', 'debug', 'ui'],
+        builder: (ctx) => SettingsRow(
+          title: 'Component Gallery',
+          subtitle: 'Interactive catalog of all Aero design system widgets',
+          icon: Symbols.widgets_rounded,
+          onTap: () => Navigator.push(
+            ctx,
+            MaterialPageRoute(builder: (_) => const ComponentGalleryScreen()),
+          ),
+        ),
+      ),
+      _SettingItemSpec(
+        id: 'view_logs',
+        title: 'View Logs',
+        description: 'Developer debugging logs and runtime events',
+        keywords: ['logs', 'view', 'console', 'debug', 'errors', 'terminal'],
+        builder: (ctx) => SettingsRow(
+          title: 'View Logs',
+          subtitle: 'Developer debugging logs and runtime events',
+          icon: Symbols.receipt_long_rounded,
+          onTap: () => _showLogsViewer(ctx),
+        ),
+      ),
+      _SettingItemSpec(
+        id: 'export_logs',
+        title: 'Export Logs',
+        description: 'Save or copy app.log for troubleshooting',
+        keywords: ['export', 'save logs', 'copy', 'file', 'share'],
+        builder: (ctx) => SettingsRow(
+          title: 'Export Logs',
+          subtitle: 'Save or copy app.log for troubleshooting',
+          icon: Symbols.file_download_rounded,
+          onTap: () => _exportLogs(ctx),
+        ),
+      ),
+      _SettingItemSpec(
+        id: 'report_bug',
+        title: 'Report a Bug',
+        description: 'Compile diagnostic report to file on GitHub',
+        keywords: ['bug', 'report', 'issue', 'github', 'crash', 'problem'],
+        builder: (ctx) => SettingsRow(
+          title: 'Report a Bug',
+          subtitle: 'Compile diagnostic report to file on GitHub',
+          icon: Symbols.pest_control_rounded,
+          onTap: () => BugReportDialog.show(ctx),
+        ),
+      ),
+      _SettingItemSpec(
+        id: 'enable_logging',
+        title: 'Enable Logging',
+        description: 'Write debug information to file',
+        keywords: ['logging', 'debug', 'trace', 'file'],
+        builder: (_) => _SettingsSwitchRow(
+          title: 'Enable Logging',
+          subtitle: 'Write debug information to file',
+          icon: Symbols.bug_report_rounded,
+          selector: (p) => p.enableLogging,
+          onChanged: (p, v) => p.setEnableLogging(v),
+        ),
+      ),
+    ];
+  }
+
+  List<_SettingItemSpec> _getAboutSpecs() {
+    return [
+      _SettingItemSpec(
+        id: 'check_updates',
+        title: 'Check for Updates',
+        description: 'Check for new AeroTube releases',
+        keywords: ['update', 'version', 'github', 'download', 'upgrade'],
+        builder: (_) => const _AppUpdateCheckRow(),
+      ),
+      _SettingItemSpec(
+        id: 'auto_check_updates',
+        title: 'Auto-check for Updates',
+        description: 'Check automatically at app launch',
+        keywords: ['auto check', 'startup', 'updates', 'automatic'],
+        builder: (_) => const _AutoUpdateSwitchRow(),
       ),
     ];
   }
@@ -1153,153 +997,6 @@ class _SettingsScreenState extends State<SettingsScreen>
     );
   }
 
-  List<_SettingEntry> _getBackgroundItems(
-    BuildContext context,
-    PlatformSettingsProvider provider,
-  ) {
-    return [
-      _SettingEntry(
-        title: 'Download Notifications',
-        subtitle: 'Show system alerts on download progress and completion',
-        keywords: ['alerts', 'push', 'notifications', 'tray', 'background'],
-        widget: SettingsRow(
-          title: 'Download Notifications',
-          subtitle: 'Show system alerts on download progress and completion',
-          icon: Symbols.notifications_rounded,
-          trailing: Switch.adaptive(
-            value: provider.enableNotifications,
-            activeThumbColor: context.aero.primary,
-            activeTrackColor: context.aero.primarySoft,
-            onChanged: provider.setEnableNotifications,
-          ),
-          onTap: () =>
-              provider.setEnableNotifications(!provider.enableNotifications),
-        ),
-      ),
-      _SettingEntry(
-        title: 'SponsorBlock',
-        subtitle:
-            'Automatically skip sponsored segments and non-music sections',
-        keywords: [
-          'skip',
-          'sponsors',
-          'segments',
-          'intro',
-          'outro',
-          'sponsorblock',
-        ],
-        widget: SettingsRow(
-          title: 'SponsorBlock',
-          subtitle:
-              'Automatically skip sponsored segments and non-music sections',
-          icon: Symbols.skip_next_rounded,
-          trailing: Switch.adaptive(
-            value: provider.sponsorBlockEnabled,
-            activeThumbColor: context.aero.primary,
-            activeTrackColor: context.aero.primarySoft,
-            onChanged: provider.setSponsorBlockEnabled,
-          ),
-          onTap: () =>
-              provider.setSponsorBlockEnabled(!provider.sponsorBlockEnabled),
-        ),
-      ),
-      if (provider.isAndroid)
-        _SettingEntry(
-          title: 'Unrestricted Battery',
-          subtitle: provider.isBatteryOptimizationIgnored
-              ? 'Allowed — downloads continue when the screen is locked'
-              : 'Restricted — system may suspend downloads when screen turns off',
-          keywords: ['battery', 'unrestricted', 'doze', 'pause', 'screen off'],
-          widget: _buildBatteryOptimizationTile(provider),
-        ),
-      if (provider.isAndroid && provider.isAggressiveOem)
-        _SettingEntry(
-          title: 'OEM Autostart Settings',
-          subtitle: 'Configure device-specific background whitelist',
-          keywords: [
-            'autostart',
-            'xiaomi',
-            'samsung',
-            'oppo',
-            'vivo',
-            'huawei',
-          ],
-          widget: SettingsRow(
-            title: '${provider.deviceManufacturer ?? "OEM"} Autostart Settings',
-            subtitle: 'Configure device-specific background whitelist',
-            icon: Symbols.power_settings_new_rounded,
-            trailing: const Icon(Symbols.open_in_new_rounded, size: 18),
-            onTap: () => provider.openOemAutostartSettings(),
-          ),
-        ),
-      _SettingEntry(
-        title: 'Download Archive',
-        subtitle: 'Track downloaded video IDs to avoid duplicate downloads',
-        keywords: [
-          'archive',
-          'duplicate',
-          'history',
-          're-download',
-          'skip existing',
-        ],
-        widget: SettingsRow(
-          title: 'Download Archive',
-          subtitle: 'Track downloaded video IDs to avoid duplicate downloads',
-          icon: Symbols.history_rounded,
-          trailing: Switch.adaptive(
-            value: provider.useDownloadArchive,
-            activeThumbColor: context.aero.primary,
-            activeTrackColor: context.aero.primarySoft,
-            onChanged: provider.setUseDownloadArchive,
-          ),
-          onTap: () =>
-              provider.setUseDownloadArchive(!provider.useDownloadArchive),
-        ),
-      ),
-    ];
-  }
-
-  Widget _buildBatteryOptimizationTile(PlatformSettingsProvider provider) {
-    final isExempt = provider.isBatteryOptimizationIgnored;
-    final isChecking = provider.isCheckingBatteryOptimization;
-
-    return SettingsRow(
-      title: 'Unrestricted Battery',
-      subtitle: isExempt
-          ? 'Allowed — downloads continue when the screen is locked'
-          : 'Restricted — system may suspend downloads when screen turns off. Tap to allow.',
-      icon: isExempt
-          ? Symbols.battery_charging_full_rounded
-          : Symbols.battery_alert_rounded,
-      iconColor: isExempt ? Colors.green : Colors.orange,
-      trailing: isChecking
-          ? const SizedBox(
-              width: 18,
-              height: 18,
-              child: CircularProgressIndicator(strokeWidth: 2),
-            )
-          : StatusPill(
-              label: isExempt ? 'Allowed' : 'Restricted',
-              type: isExempt ? StatusPillType.success : StatusPillType.warning,
-            ),
-      onTap: isChecking
-          ? null
-          : () async {
-              final granted = await provider
-                  .requestBatteryOptimizationExemption();
-              if (!mounted) return;
-              if (granted) {
-                AeroSnack.success(
-                  context,
-                  message: 'Unrestricted battery allowed',
-                );
-              } else {
-                _showBatteryHelpDialog(provider);
-              }
-            },
-    );
-  }
-
   void _showBatteryHelpDialog(PlatformSettingsProvider provider) {
     showAeroDialog<void>(
       context: context,
@@ -1344,151 +1041,13 @@ class _SettingsScreenState extends State<SettingsScreen>
     );
   }
 
-  List<_SettingEntry> _getAdvancedItems(
-    BuildContext context,
-    PlatformSettingsProvider provider,
-  ) {
-    return [
-      _SettingEntry(
-        title: 'Component Gallery',
-        subtitle: 'Interactive catalog of all Aero design system widgets',
-        keywords: ['components', 'gallery', 'design', 'tokens', 'debug', 'ui'],
-        widget: SettingsRow(
-          title: 'Component Gallery',
-          subtitle: 'Interactive catalog of all Aero design system widgets',
-          icon: Symbols.widgets_rounded,
-          onTap: () => Navigator.push(
-            context,
-            MaterialPageRoute(builder: (_) => const ComponentGalleryScreen()),
-          ),
-        ),
-      ),
-      _SettingEntry(
-        title: 'View Logs',
-        subtitle: 'Developer debugging logs and runtime events',
-        keywords: ['logs', 'view', 'console', 'debug', 'errors', 'terminal'],
-        widget: SettingsRow(
-          title: 'View Logs',
-          subtitle: 'Developer debugging logs and runtime events',
-          icon: Symbols.receipt_long_rounded,
-          onTap: () => _showLogsViewer(context),
-        ),
-      ),
-      _SettingEntry(
-        title: 'Export Logs',
-        subtitle: 'Save or copy app.log for troubleshooting',
-        keywords: ['export', 'save logs', 'copy', 'file', 'share'],
-        widget: SettingsRow(
-          title: 'Export Logs',
-          subtitle: 'Save or copy app.log for troubleshooting',
-          icon: Symbols.file_download_rounded,
-          onTap: () => _exportLogs(context),
-        ),
-      ),
-      _SettingEntry(
-        title: 'Report a Bug',
-        subtitle: 'Compile diagnostic report to file on GitHub',
-        keywords: ['bug', 'report', 'issue', 'github', 'crash', 'problem'],
-        widget: SettingsRow(
-          title: 'Report a Bug',
-          subtitle: 'Compile diagnostic report to file on GitHub',
-          icon: Symbols.pest_control_rounded,
-          onTap: () => BugReportDialog.show(context),
-        ),
-      ),
-      _SettingEntry(
-        title: 'Enable Logging',
-        subtitle: 'Write debug information to file',
-        keywords: ['logging', 'debug', 'trace', 'file'],
-        widget: SettingsRow(
-          title: 'Enable Logging',
-          subtitle: 'Write debug information to file',
-          icon: Symbols.bug_report_rounded,
-          trailing: Switch.adaptive(
-            value: provider.enableLogging,
-            activeThumbColor: context.aero.primary,
-            activeTrackColor: context.aero.primarySoft,
-            onChanged: provider.setEnableLogging,
-          ),
-          onTap: () => provider.setEnableLogging(!provider.enableLogging),
-        ),
-      ),
-    ];
-  }
-
-  List<_SettingEntry> _getAboutItems(
-    BuildContext context,
-    PlatformSettingsProvider provider,
-    UpdateProvider updateProvider,
-  ) {
-    return [
-      _SettingEntry(
-        title: 'Check for Updates',
-        subtitle: updateProvider.hasUpdate
-            ? 'Version ${updateProvider.updateInfo?.version} available'
-            : 'Check for new AeroTube releases',
-        keywords: ['update', 'version', 'github', 'download', 'upgrade'],
-        widget: SettingsRow(
-          title: 'Check for Updates',
-          subtitle: updateProvider.hasUpdate
-              ? 'Version ${updateProvider.updateInfo?.version} available'
-              : 'Check for new AeroTube releases',
-          icon: Symbols.system_update_rounded,
-          trailing: updateProvider.isChecking
-              ? const SizedBox(
-                  width: 18,
-                  height: 18,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-              : updateProvider.hasUpdate
-              ? const StatusPill.warning(label: 'Update Available')
-              : const Icon(Symbols.chevron_right_rounded, size: 20),
-          onTap: updateProvider.isChecking
-              ? null
-              : () async {
-                  await updateProvider.checkForUpdates(force: true);
-                  if (!context.mounted) return;
-                  if (updateProvider.status == UpdateStatus.available ||
-                      updateProvider.status == UpdateStatus.upToDate ||
-                      updateProvider.status == UpdateStatus.error) {
-                    showAeroDialog(
-                      context: context,
-                      barrierDismissible: false,
-                      builder: (_) => const UpdateDialog(),
-                    );
-                  }
-                },
-        ),
-      ),
-      _SettingEntry(
-        title: 'Auto-check for Updates',
-        subtitle: 'Check automatically at app launch',
-        keywords: ['auto check', 'startup', 'updates', 'automatic'],
-        widget: SettingsRow(
-          title: 'Auto-check for Updates',
-          subtitle: 'Check automatically at app launch',
-          icon: Symbols.update_rounded,
-          trailing: Switch.adaptive(
-            value: updateProvider.autoCheckEnabled,
-            activeThumbColor: context.aero.primary,
-            activeTrackColor: context.aero.primarySoft,
-            onChanged: (val) => updateProvider.setAutoCheckEnabled(val),
-          ),
-          onTap: () => updateProvider.setAutoCheckEnabled(
-            !updateProvider.autoCheckEnabled,
-          ),
-        ),
-      ),
-    ];
-  }
-
   Widget _buildAboutFooter(BuildContext context) {
     final colors = context.aero;
 
     return Center(
       child: Column(
         children: [
-          const AppLogo(size: 72, showGlow: true),
+          const AppLogo(size: 72, useAnimations: false, showGlow: false),
           const SizedBox(height: AeroSpace.md),
           Text(
             'AeroTube v$_appVersion',
@@ -1503,7 +1062,7 @@ class _SettingsScreenState extends State<SettingsScreen>
             style: AeroText.caption.copyWith(color: colors.onSurfaceFaint),
           ),
         ],
-      ).animate().fadeIn(duration: 300.ms),
+      ),
     );
   }
 
@@ -1988,31 +1547,6 @@ class _SettingsScreenState extends State<SettingsScreen>
         child: const LogsViewer(showTitle: false),
       ),
     );
-  }
-}
-
-class _SettingEntry {
-  final String title;
-  final String? subtitle;
-  final List<String> keywords;
-  final Widget widget;
-
-  _SettingEntry({
-    required this.title,
-    this.subtitle,
-    this.keywords = const [],
-    required this.widget,
-  });
-
-  bool matches(String query) {
-    if (query.isEmpty) return true;
-    final q = query.toLowerCase();
-    if (title.toLowerCase().contains(q)) return true;
-    if (subtitle != null && subtitle!.toLowerCase().contains(q)) return true;
-    for (final kw in keywords) {
-      if (kw.toLowerCase().contains(q)) return true;
-    }
-    return false;
   }
 }
 

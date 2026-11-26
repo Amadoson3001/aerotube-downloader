@@ -224,7 +224,7 @@ class _AppState extends State<App> with TickerProviderStateMixin {
                                                 index: currentIndex,
                                                 duration: appMotionDuration(
                                                   context,
-                                                  AppMotion.short,
+                                                  AppMotion.fast,
                                                 ),
                                                 children: _screens,
                                               ),
@@ -320,12 +320,22 @@ class _SmoothIndexedStackState extends State<_SmoothIndexedStack>
 
   @override
   Widget build(BuildContext context) {
+    final stack = IndexedStack(
+      index: widget.index,
+      children: [
+        for (var i = 0; i < widget.children.length; i++)
+          TickerMode(
+            enabled: i == widget.index,
+            child: widget.children[i],
+          ),
+      ],
+    );
+    if (widget.duration == Duration.zero) {
+      return stack;
+    }
     return FadeTransition(
       opacity: _opacity,
-      child: IndexedStack(
-        index: widget.index,
-        children: widget.children,
-      ),
+      child: stack,
     );
   }
 }

@@ -13,6 +13,7 @@ import '../../providers/download_provider.dart';
 import '../../providers/platform_settings_provider.dart';
 import '../../providers/video_provider.dart';
 import '../components/components.dart';
+import 'video_configuration_controls.dart';
 
 /// Two-pane Windows video configuration panel conforming to AeroTube design spec.
 ///
@@ -390,7 +391,13 @@ class _VideoConfigurationWidgetState extends State<VideoConfigurationWidget> {
         ),
         const SizedBox(height: AeroSpace.xl),
         if (provider.audioOnly)
-          _buildAudioQualitySection(context, aero, provider)
+          AudioQualityConfigurationSection(
+            provider: provider,
+            sectionSpacing: AeroSpace.xl,
+            headerSpacing: AeroSpace.md,
+            emptyStreamsMessage:
+                'No audio streams available for this quality tier.',
+          )
         else
           _buildVideoQualitySection(context, aero, provider),
         const SizedBox(height: AeroSpace.xl),
@@ -463,204 +470,28 @@ class _VideoConfigurationWidgetState extends State<VideoConfigurationWidget> {
         const SizedBox(height: AeroSpace.xl),
 
         // Codec Variants list
-        _buildCodecVariants(context, aero, provider),
+        VideoCodecVariantsSection(
+          provider: provider,
+          title: 'CODEC & CONTAINER',
+          headerMargin: const EdgeInsets.only(top: 0, bottom: AeroSpace.md),
+          headerSpacing: AeroSpace.md,
+          exactFpsLabel: true,
+        ),
 
         // Audio merge track selector if video is video-only
         if (provider.selectedVideoFormat?.hasAudio == false) ...[
           const SizedBox(height: AeroSpace.xl),
-          _buildAudioTrackSelector(context, aero, provider),
+          AudioMergeTrackSelector(
+            provider: provider,
+            headerMargin: const EdgeInsets.only(top: 0, bottom: AeroSpace.md),
+            headerSpacing: AeroSpace.md,
+            containerPadding: const EdgeInsets.symmetric(
+              horizontal: AeroSpace.lg,
+              vertical: 4,
+            ),
+            showLeadingIcon: true,
+          ),
         ],
-      ],
-    );
-  }
-
-  Widget _buildCodecVariants(
-    BuildContext context,
-    AeroColors aero,
-    VideoProvider provider,
-  ) {
-    final resolution = provider.selectedResolution;
-    if (resolution == null || resolution.formats.isEmpty) {
-      return const SizedBox.shrink();
-    }
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const SectionHeader(
-          title: 'CODEC & CONTAINER',
-          margin: EdgeInsets.only(top: 0, bottom: AeroSpace.md),
-        ),
-        Wrap(
-          spacing: AeroSpace.sm,
-          runSpacing: AeroSpace.sm,
-          children: resolution.formats.map((format) {
-            final isSelected =
-                provider.selectedVideoFormat?.formatId == format.formatId;
-            final container = (format.extension ?? 'mp4').toUpperCase();
-            final label = '$container · ${format.codecName}';
-
-            return FormatChip(
-              label: label,
-              badge: format.isHdr
-                  ? 'HDR'
-                  : format.is60fps
-                  ? '${format.fps!.round()}fps'
-                  : null,
-              sizeEstimate: provider.formattedTotalSizeForFormat(format),
-              selected: isSelected,
-              onTap: () => provider.setSelectedVideoFormat(format),
-            );
-          }).toList(),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildAudioTrackSelector(
-    BuildContext context,
-    AeroColors aero,
-    VideoProvider provider,
-  ) {
-    final video = provider.videoInfo;
-    if (video == null || video.audioOnlyFormats.isEmpty) {
-      return const SizedBox.shrink();
-    }
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const SectionHeader(
-          title: 'AUDIO TRACK TO MERGE',
-          margin: EdgeInsets.only(top: 0, bottom: AeroSpace.md),
-        ),
-        Container(
-          padding: const EdgeInsets.symmetric(
-            horizontal: AeroSpace.lg,
-            vertical: 4,
-          ),
-          decoration: BoxDecoration(
-            color: aero.surface2,
-            borderRadius: AeroRadius.smBorderRadius,
-            border: Border.all(color: aero.outline, width: 1.0),
-          ),
-          child: Row(
-            children: [
-              Icon(Symbols.audiotrack_rounded, size: 18, color: aero.primary),
-              const SizedBox(width: AeroSpace.md),
-              Expanded(
-                child: DropdownButtonHideUnderline(
-                  child: DropdownButton<FormatInfo>(
-                    value: provider.selectedAudioMergeStream,
-                    isExpanded: true,
-                    dropdownColor: aero.surface2,
-                    icon: Icon(
-                      Symbols.arrow_drop_down_rounded,
-                      color: aero.onSurfaceMuted,
-                    ),
-                    style: AeroText.bodySm.copyWith(color: aero.onSurface),
-                    onChanged: (newValue) {
-                      if (newValue != null) {
-                        provider.setSelectedAudioMergeStream(newValue);
-                      }
-                    },
-                    items: video.audioOnlyFormats.map((format) {
-                      final bitrate = format.audioBitrate ?? 0;
-                      final size = format.formattedEstimatedFilesize(
-                        video.duration,
-                      );
-                      return DropdownMenuItem<FormatInfo>(
-                        value: format,
-                        child: Text(
-                          '${format.audioTrackLabel} · ${bitrate}kbps ($size) [${format.codecName}]',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      );
-                    }).toList(),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildAudioQualitySection(
-    BuildContext context,
-    AeroColors aero,
-    VideoProvider provider,
-  ) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const SectionHeader(title: 'AUDIO QUALITY TIER'),
-        const SizedBox(height: AeroSpace.md),
-        Wrap(
-          spacing: AeroSpace.sm,
-          runSpacing: AeroSpace.sm,
-          children: AudioQuality.values.map((quality) {
-            final isSelected = quality == provider.selectedAudioQuality;
-            return FormatChip(
-              label: quality.label,
-              selected: isSelected,
-              onTap: () => provider.setAudioQuality(quality),
-            );
-          }).toList(),
-        ),
-        const SizedBox(height: AeroSpace.xl),
-
-        // Detailed available streams for the chosen quality
-        _buildAudioStreamsList(context, aero, provider),
-      ],
-    );
-  }
-
-  Widget _buildAudioStreamsList(
-    BuildContext context,
-    AeroColors aero,
-    VideoProvider provider,
-  ) {
-    final video = provider.videoInfo;
-    if (video == null) return const SizedBox.shrink();
-
-    final audioFormats = video.getAudioFormatsForQuality(
-      provider.selectedAudioQuality,
-    );
-
-    if (audioFormats.isEmpty) {
-      return Text(
-        'No audio streams available for this quality tier.',
-        style: AeroText.bodySm.copyWith(color: aero.onSurfaceMuted),
-      );
-    }
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const SectionHeader(title: 'AUDIO STREAMS'),
-        const SizedBox(height: AeroSpace.md),
-        Wrap(
-          spacing: AeroSpace.sm,
-          runSpacing: AeroSpace.sm,
-          children: audioFormats.map((format) {
-            final isSelected =
-                format.formatId == provider.selectedAudioMergeStream?.formatId;
-            final ext = (format.extension ?? 'AUDIO').toUpperCase();
-            final label = '$ext · ${format.audioBitrate ?? 0}kbps';
-            final size = format.formattedEstimatedFilesize(video.duration);
-
-            return FormatChip(
-              label: label,
-              sizeEstimate: size,
-              badge: format.audioTrackLabel,
-              selected: isSelected,
-              onTap: () => provider.setSelectedAudioMergeStream(format),
-            );
-          }).toList(),
-        ),
       ],
     );
   }
@@ -750,56 +581,13 @@ class _VideoConfigurationWidgetState extends State<VideoConfigurationWidget> {
             Divider(height: 1, color: aero.outline),
 
             // Subtitles row
-            if (video != null && video.subtitles.isNotEmpty) ...[
-              SettingsRow(
-                icon: Symbols.subtitles_rounded,
-                title: 'Subtitles',
-                subtitle: provider.selectedSubtitles.isEmpty
-                    ? 'None selected'
-                    : '${provider.selectedSubtitles.length} language(s) selected',
-                trailing: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      'Embed',
-                      style: AeroText.caption.copyWith(
-                        color: aero.onSurfaceMuted,
-                      ),
-                    ),
-                    const SizedBox(width: AeroSpace.xs),
-                    Switch(
-                      value: provider.embedSubtitles,
-                      onChanged: provider.selectedSubtitles.isNotEmpty
-                          ? (v) => provider.setEmbedSubtitles(v)
-                          : null,
-                      activeThumbColor: aero.primary,
-                    ),
-                  ],
-                ),
+            if (video != null)
+              SubtitleConfigurationSection(
+                provider: provider,
+                video: video,
+                preferredLanguage: settingsProvider.defaultSubtitleLanguage,
+                selectedCountSuffix: 'language(s) selected',
               ),
-              // Subtitle chips row
-              Padding(
-                padding: const EdgeInsets.fromLTRB(
-                  AeroSpace.lg,
-                  0,
-                  AeroSpace.lg,
-                  AeroSpace.md,
-                ),
-                child: Wrap(
-                  spacing: AeroSpace.xs,
-                  runSpacing: AeroSpace.xs,
-                  children: video.subtitles.take(6).map((sub) {
-                    final isSel = provider.selectedSubtitles.contains(sub);
-                    return AeroChip(
-                      text: sub.name,
-                      selected: isSel,
-                      onTap: () => provider.toggleSubtitle(sub),
-                    );
-                  }).toList(),
-                ),
-              ),
-              Divider(height: 1, color: aero.outline),
-            ],
 
             // SponsorBlock row
             SettingsRow(
@@ -1014,86 +802,74 @@ class _VideoConfigurationWidgetState extends State<VideoConfigurationWidget> {
   // ==========================================
 
   Widget _buildLoadingSkeleton(BuildContext context, AeroColors aero) {
-    return AeroCard(
-      borderRadius: AeroRadius.lgBorderRadius,
-      backgroundColor: aero.surface1,
-      borderColor: aero.outline,
-      padding: const EdgeInsets.all(AeroSpace.xxl),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          // Left skeleton
-          Expanded(
-            flex: 40,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const AspectRatio(
-                  aspectRatio: 16 / 9,
-                  child: ThumbnailTile(
-                    borderRadius: BorderRadius.all(Radius.circular(14)),
-                  ),
-                ),
-                const SizedBox(height: AeroSpace.xl),
-                _skeletonBox(aero, height: 20, widthFactor: 0.85),
-                const SizedBox(height: AeroSpace.md),
-                _skeletonBox(aero, height: 14, widthFactor: 0.5),
-                const SizedBox(height: AeroSpace.md),
-                _skeletonBox(aero, height: 12, widthFactor: 0.7),
-              ],
-            ),
-          ),
-          Container(width: 1.0, color: aero.outline),
-          // Right skeleton
-          Expanded(
-            flex: 60,
-            child: Padding(
-              padding: const EdgeInsets.all(AeroSpace.xxl),
+    return AeroShimmerScope(
+      child: AeroCard(
+        borderRadius: AeroRadius.lgBorderRadius,
+        backgroundColor: aero.surface1,
+        borderColor: aero.outline,
+        padding: const EdgeInsets.all(AeroSpace.xxl),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // Left skeleton
+            Expanded(
+              flex: 40,
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  _skeletonBox(aero, height: 38, widthFactor: 1.0),
-                  const SizedBox(height: AeroSpace.xxl),
-                  _skeletonBox(aero, height: 16, widthFactor: 0.4),
-                  const SizedBox(height: AeroSpace.md),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: _skeletonBox(aero, height: 48, widthFactor: 1.0),
+                  const AspectRatio(
+                    aspectRatio: 16 / 9,
+                    child: ThumbnailTile(
+                      borderRadius: BorderRadius.all(Radius.circular(14)),
+                      fallback: AeroSkeletonBox(
+                        borderRadius: BorderRadius.all(Radius.circular(14)),
                       ),
-                      const SizedBox(width: AeroSpace.sm),
-                      Expanded(
-                        child: _skeletonBox(aero, height: 48, widthFactor: 1.0),
-                      ),
-                      const SizedBox(width: AeroSpace.sm),
-                      Expanded(
-                        child: _skeletonBox(aero, height: 48, widthFactor: 1.0),
-                      ),
-                    ],
+                    ),
                   ),
                   const SizedBox(height: AeroSpace.xl),
-                  _skeletonBox(aero, height: 80, widthFactor: 1.0),
+                  const AeroSkeletonBox(height: 20, widthFactor: 0.85, phaseOffset: 0.08),
+                  const SizedBox(height: AeroSpace.md),
+                  const AeroSkeletonBox(height: 14, widthFactor: 0.5, phaseOffset: 0.16),
+                  const SizedBox(height: AeroSpace.md),
+                  const AeroSkeletonBox(height: 12, widthFactor: 0.7, phaseOffset: 0.24),
                 ],
               ),
             ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _skeletonBox(
-    AeroColors aero, {
-    required double height,
-    required double widthFactor,
-  }) {
-    return FractionallySizedBox(
-      widthFactor: widthFactor,
-      child: Container(
-        height: height,
-        decoration: BoxDecoration(
-          color: aero.surface2,
-          borderRadius: AeroRadius.smBorderRadius,
+            Container(width: 1.0, color: aero.outline),
+            // Right skeleton
+            const Expanded(
+              flex: 60,
+              child: Padding(
+                padding: EdgeInsets.all(AeroSpace.xxl),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    AeroSkeletonBox(height: 38, widthFactor: 1.0, phaseOffset: 0.10),
+                    SizedBox(height: AeroSpace.xxl),
+                    AeroSkeletonBox(height: 16, widthFactor: 0.4, phaseOffset: 0.18),
+                    SizedBox(height: AeroSpace.md),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: AeroSkeletonBox(height: 48, widthFactor: 1.0, phaseOffset: 0.24),
+                        ),
+                        SizedBox(width: AeroSpace.sm),
+                        Expanded(
+                          child: AeroSkeletonBox(height: 48, widthFactor: 1.0, phaseOffset: 0.32),
+                        ),
+                        SizedBox(width: AeroSpace.sm),
+                        Expanded(
+                          child: AeroSkeletonBox(height: 48, widthFactor: 1.0, phaseOffset: 0.40),
+                        ),
+                      ],
+                    ),
+                    SizedBox(height: AeroSpace.xl),
+                    AeroSkeletonBox(height: 80, widthFactor: 1.0, phaseOffset: 0.48),
+                  ],
+                ),
+              ),
+            ),
+          ],
         ),
       ),
     );

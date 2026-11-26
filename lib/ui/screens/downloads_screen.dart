@@ -1,5 +1,6 @@
 import 'package:material_symbols_icons/symbols.dart';
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../core/theme/app_motion.dart';
@@ -455,12 +456,18 @@ class _ActiveDownloadsView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final List<DownloadItem> downloads = PlatformUtils.isMobile
-        ? context.select<MobileDownloadProvider, List<DownloadItem>>(
-            (p) => p.activeDownloads,
+    final Widget listBody = PlatformUtils.isMobile
+        ? Selector<MobileDownloadProvider, List<String>>(
+            selector: (_, p) =>
+                p.activeDownloads.map((d) => d.id).toList(growable: false),
+            shouldRebuild: (prev, next) => !listEquals(prev, next),
+            builder: (context, ids, _) => _buildList(context, ids),
           )
-        : context.select<DownloadProvider, List<DownloadItem>>(
-            (p) => p.activeDownloads,
+        : Selector<DownloadProvider, List<String>>(
+            selector: (_, p) =>
+                p.activeDownloads.map((d) => d.id).toList(growable: false),
+            shouldRebuild: (prev, next) => !listEquals(prev, next),
+            builder: (context, ids, _) => _buildList(context, ids),
           );
 
     return Center(
@@ -469,80 +476,87 @@ class _ActiveDownloadsView extends StatelessWidget {
         child: Column(
           children: [
             const _OemBatteryGuidanceBanner(),
-            Expanded(
-              child: downloads.isEmpty
-                  ? EmptyState(
-                      icon: Symbols.download_rounded,
-                      title: 'No active downloads',
-                      description:
-                          'Add a video URL on Home and your transfer progress will appear here.',
-                      actionLabel: 'Go to Home',
-                      onAction: () =>
-                          context.read<NavigationProvider>().switchToHome(),
-                    )
-                  : ListView.builder(
-                      cacheExtent: 400,
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: AeroSpace.lg,
-                        vertical: AeroSpace.sm,
-                      ),
-                      itemCount: downloads.length,
-                      itemBuilder: (context, index) {
-                        final item = downloads[index];
-                        return DownloadItemCard(
-                          key: ValueKey(item.id),
-                          item: item,
-                          onCancel: () {
-                            if (PlatformUtils.isMobile) {
-                              context
-                                  .read<MobileDownloadProvider>()
-                                  .cancelDownload(item.id);
-                            } else {
-                              context.read<DownloadProvider>().cancelDownload(
-                                item.id,
-                              );
-                            }
-                          },
-                          onPause: () {
-                            if (PlatformUtils.isMobile) {
-                              context
-                                  .read<MobileDownloadProvider>()
-                                  .pauseDownload(item.id);
-                            } else {
-                              context.read<DownloadProvider>().pauseDownload(
-                                item.id,
-                              );
-                            }
-                          },
-                          onResume: () {
-                            if (PlatformUtils.isMobile) {
-                              context
-                                  .read<MobileDownloadProvider>()
-                                  .resumeDownload(item.id);
-                            } else {
-                              context.read<DownloadProvider>().resumeDownload(
-                                item.id,
-                              );
-                            }
-                          },
-                          onRetry: () {
-                            if (PlatformUtils.isMobile) {
-                              context
-                                  .read<MobileDownloadProvider>()
-                                  .retryDownload(item.id);
-                            } else {
-                              context.read<DownloadProvider>().retryDownload(
-                                item.id,
-                              );
-                            }
-                          },
-                        );
-                      },
-                    ),
-            ),
+            Expanded(child: listBody),
           ],
         ),
       ),
+    );
+  }
+
+  Widget _buildList(BuildContext context, List<String> ids) {
+    if (ids.isEmpty) {
+      return EmptyState(
+        icon: Symbols.download_rounded,
+        title: 'No active downloads',
+        description:
+            'Add a video URL on Home and your transfer progress will appear here.',
+        actionLabel: 'Go to Home',
+        onAction: () => context.read<NavigationProvider>().switchToHome(),
+      );
+    }
+    return ListView.builder(
+      cacheExtent: 400,
+      padding: const EdgeInsets.symmetric(
+        horizontal: AeroSpace.lg,
+        vertical: AeroSpace.sm,
+      ),
+      itemCount: ids.length,
+      itemBuilder: (context, index) {
+        final id = ids[index];
+        return _ActiveDownloadCardSlot(key: ValueKey(id), downloadId: id);
+      },
+    );
+  }
+}
+
+/// Subscribes only to a single download [downloadId] so progress ticks on one
+/// download never rebuild sibling download cards.
+class _ActiveDownloadCardSlot extends StatelessWidget {
+  final String downloadId;
+  const _ActiveDownloadCardSlot({super.key, required this.downloadId});
+
+  @override
+  Widget build(BuildContext context) {
+    final DownloadItem? item = PlatformUtils.isMobile
+        ? context.select<MobileDownloadProvider, DownloadItem?>(
+            (p) => p.activeDownloads.where((d) => d.id == downloadId).firstOrNull,
+          )
+        : context.select<DownloadProvider, DownloadItem?>(
+            (p) => p.activeDownloads.where((d) => d.id == downloadId).firstOrNull,
+          );
+
+    if (item == null) return const SizedBox.shrink();
+
+    return DownloadItemCard(
+      item: item,
+      onCancel: () {
+        if (PlatformUtils.isMobile) {
+          context.read<MobileDownloadProvider>().cancelDownload(item.id);
+        } else {
+          context.read<DownloadProvider>().cancelDownload(item.id);
+        }
+      },
+      onPause: () {
+        if (PlatformUtils.isMobile) {
+          context.read<MobileDownloadProvider>().pauseDownload(item.id);
+        } else {
+          context.read<DownloadProvider>().pauseDownload(item.id);
+        }
+      },
+      onResume: () {
+        if (PlatformUtils.isMobile) {
+          context.read<MobileDownloadProvider>().resumeDownload(item.id);
+        } else {
+          context.read<DownloadProvider>().resumeDownload(item.id);
+        }
+      },
+      onRetry: () {
+        if (PlatformUtils.isMobile) {
+          context.read<MobileDownloadProvider>().retryDownload(item.id);
+        } else {
+          context.read<DownloadProvider>().retryDownload(item.id);
+        }
+      },
     );
   }
 }

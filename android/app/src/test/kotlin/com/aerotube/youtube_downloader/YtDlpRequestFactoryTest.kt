@@ -634,7 +634,9 @@ class YtDlpRequestFactoryTest {
         assertTrue(base.hasFlag("--force-ipv4"))
         assertTrue(base.hasFlag("--no-warnings"))
         assertFalse(base.hasOpt("--extractor-args"))
-        assertEquals("10", base.optValue("--retries"))
+        assertEquals("3", base.optValue("--retries"))
+        assertEquals("3", base.optValue("--extractor-retries"))
+        assertTrue(base.hasFlag("--no-check-formats"))
         assertEquals("https://youtu.be/abc", base.url)
 
         val fb = YtDlpRequestFactory.infoArgs(
@@ -652,5 +654,38 @@ class YtDlpRequestFactoryTest {
             "https://youtu.be/abc", null, "MyAgent/1.0", fallback = false
         )
         assertEquals("MyAgent/1.0", req.optValue("--user-agent"))
+    }
+
+    @Test
+    fun extractorCacheIsSharedByMetadataAndDownloadsWithoutChangingFormatSelection() {
+        val cachePath = "/private/cache/ytdlp-extractor"
+        val info = YtDlpRequestFactory.infoArgs(
+            "https://youtu.be/abc", null, null,
+            extractorCachePath = cachePath,
+        )
+        val download = YtDlpRequestFactory.downloadArgs(
+            baseJob(), extractorCachePath = cachePath,
+        )
+        assertEquals(cachePath, info.optValue("--cache-dir"))
+        assertEquals(cachePath, download.optValue("--cache-dir"))
+        assertFalse(info.hasFlag("--no-cache-dir"))
+        assertFalse(info.hasOpt("--extractor-args"))
+        assertEquals("bestvideo+bestaudio/best", download.optValue("-f"))
+        assertEquals("10", download.optValue("--retries"))
+        assertFalse(download.hasFlag("--no-check-formats"))
+    }
+
+    @Test
+    fun pluginDirIsEmittedWhenProvided() {
+        val pluginPath = "/private/nobackup/aerotube-ytdlp-plugins"
+        val info = YtDlpRequestFactory.infoArgs(
+            "https://youtu.be/abc", null, null,
+            pluginDirPath = pluginPath,
+        )
+        val download = YtDlpRequestFactory.downloadArgs(
+            baseJob(), pluginDirPath = pluginPath,
+        )
+        assertEquals(pluginPath, info.optValue("--plugin-dirs"))
+        assertEquals(pluginPath, download.optValue("--plugin-dirs"))
     }
 }

@@ -151,27 +151,32 @@ void main() {
         loggingService.info('Using Windows services', component: 'Main');
       }
 
-      // Warm yt-dlp via background isolate — offloads Process.run from main thread
-      compute(YtdlpService.checkBinaryAvailable, ytdlpService.ytdlpPath)
-          .then((version) {
-            if (version != null) {
-              ytdlpService.markReady(version);
-            } else {
-              return ytdlpService.initialize(); // fallback: try download
-            }
-          })
-          .then((_) {
-            loggingService.info(
-              'yt-dlp service initialized',
-              component: 'Main',
-            );
-          })
-          .catchError((e) {
-            loggingService.warning(
-              'yt-dlp initialization failed: $e',
-              component: 'Main',
-            );
-          });
+      // Platform-specific tool initialization:
+      // - Desktop: warm yt-dlp via background isolate (offloads Process.run)
+      // - Android: skip desktop Process.run probe and defer native init until
+      //   after the first frame so cold start isn't contended.
+      if (!isAndroid) {
+        compute(YtdlpService.checkBinaryAvailable, ytdlpService.ytdlpPath)
+            .then((version) {
+              if (version != null) {
+                ytdlpService.markReady(version);
+              } else {
+                return ytdlpService.initialize(); // fallback: try download
+              }
+            })
+            .then((_) {
+              loggingService.info(
+                'yt-dlp service initialized',
+                component: 'Main',
+              );
+            })
+            .catchError((e) {
+              loggingService.warning(
+                'yt-dlp initialization failed: $e',
+                component: 'Main',
+              );
+            });
+      }
 
       runApp(
         MultiProvider(
@@ -227,29 +232,51 @@ void main() {
         ),
       );
 
-      // Environment dump for bug reports (after services exist; tool versions
-      // may still be "not ready" — that is expected and useful).
-      String appVersion = 'unknown';
-      String buildNumber = '0';
-      try {
-        final info = await PackageInfo.fromPlatform();
-        appVersion = info.version;
-        buildNumber = info.buildNumber;
-      } catch (_) {}
-      unawaited(
-        loggingService.logEnvironment(
-          appVersion: appVersion,
-          buildNumber: buildNumber,
-          platform: PlatformUtils.platformName,
-          ytdlpVersion: null,
-          ffmpegVersion: null,
-          locale: Platform.localeName,
-          extra: {
-            'ytdlp path': ytdlpService.ytdlpPath,
-            'cookies on': '${settingsService.settings.enableCookies}',
-          },
-        ),
-      );
+      // Defer nonessential startup checks (Android native warm-up, environment
+      // dump) until after the first usable frame is rendered.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (isAndroid) {
+          unawaited(
+            ytdlpService
+                .initialize()
+                .then((_) {
+                  loggingService.info(
+                    'Android yt-dlp service initialized',
+                    component: 'Main',
+                  );
+                })
+                .catchError((e) {
+                  loggingService.warning(
+                    'Android yt-dlp initialization failed: $e',
+                    component: 'Main',
+                  );
+                }),
+          );
+        }
+        Future<void>.delayed(const Duration(milliseconds: 500), () async {
+          String appVersion = 'unknown';
+          String buildNumber = '0';
+          try {
+            final info = await PackageInfo.fromPlatform();
+            appVersion = info.version;
+            buildNumber = info.buildNumber;
+          } catch (_) {}
+          unawaited(
+            loggingService.logEnvironment(
+              appVersion: appVersion,
+              buildNumber: buildNumber,
+              platform: PlatformUtils.platformName,
+              ytdlpVersion: null,
+              ffmpegVersion: null,
+              locale: Platform.localeName,
+              extra: {
+                'ytdlp path': ytdlpService.ytdlpPath,
+                'cookies on': '${settingsService.settings.enableCookies}',
+              },
+            ),
+          );
+        });
+      });
     },
     (error, stackTrace) {
       // Global error handler for all uncaught async errors

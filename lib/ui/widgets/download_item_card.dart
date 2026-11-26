@@ -1,6 +1,8 @@
 import 'package:material_symbols_icons/symbols.dart';
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import '../../core/theme/app_motion.dart';
 import '../../core/theme/tokens/colors.dart';
 import '../../core/theme/tokens/radius.dart';
 import '../../core/theme/tokens/spacing.dart';
@@ -61,7 +63,54 @@ class DownloadItemCard extends StatefulWidget {
   State<DownloadItemCard> createState() => _DownloadItemCardState();
 }
 
-class _DownloadItemCardState extends State<DownloadItemCard> {
+class _DownloadItemCardState extends State<DownloadItemCard>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _popController;
+  late final Animation<double> _popScale;
+
+  @override
+  void initState() {
+    super.initState();
+    _popController = AnimationController(
+      vsync: this,
+      duration: AppMotion.medium,
+    );
+    _popScale = TweenSequence<double>([
+      TweenSequenceItem(
+        tween: Tween<double>(begin: 1.0, end: 1.02)
+            .chain(CurveTween(curve: AppMotion.emphasized)),
+        weight: 45,
+      ),
+      TweenSequenceItem(
+        tween: Tween<double>(begin: 1.02, end: 1.0)
+            .chain(CurveTween(curve: AppMotion.decelerate)),
+        weight: 55,
+      ),
+    ]).animate(_popController);
+  }
+
+  @override
+  void didUpdateWidget(covariant DownloadItemCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.item.status != DownloadStatus.completed &&
+        widget.item.status == DownloadStatus.completed) {
+      if (PlatformUtils.isAndroid) {
+        HapticFeedback.lightImpact();
+      }
+      final dur = readAppMotionDuration(context, AppMotion.medium);
+      if (dur > Duration.zero) {
+        _popController.duration = dur;
+        _popController.forward(from: 0.0);
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    _popController.dispose();
+    super.dispose();
+  }
+
   Future<void> _openContainingFolder() async {
     final path = widget.item.savePath ?? widget.item.outputPath;
     if (path.isEmpty) {
@@ -269,10 +318,11 @@ class _DownloadItemCardState extends State<DownloadItemCard> {
     final isCompleted = widget.item.status == DownloadStatus.completed;
     final isHistoryMode = widget.isHistory || isCompleted;
 
-    if (isHistoryMode) {
-      return _buildHistoryCard(context);
-    }
-    return _buildActiveCard(context);
+    final card = isHistoryMode
+        ? _buildHistoryCard(context)
+        : _buildActiveCard(context);
+
+    return ScaleTransition(scale: _popScale, child: card);
   }
 
   // ==========================================

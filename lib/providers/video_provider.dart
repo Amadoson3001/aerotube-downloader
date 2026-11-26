@@ -1,24 +1,23 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:youtube_explode_dart/youtube_explode_dart.dart' as explode;
 import '../models/video_info.dart';
 import '../models/playlist_info.dart';
-import '../services/ytdlp/ytdlp_service_windows.dart';
-import '../services/ytdlp/ytdlp_service_android.dart';
+import '../models/search_video_result.dart';
 import '../services/ytdlp/ytdlp_tool_service.dart';
 import '../services/core/logging_service.dart';
+import '../services/core/fetch_priority.dart';
 import '../core/utils/error_helper.dart';
 import '../core/constants/app_constants.dart';
 import '../core/utils/platform_utils.dart';
 
 class VideoProvider extends ChangeNotifier {
-  final dynamic
-  _ytdlpService; // YtdlpService (Windows) or YtdlpServiceAndroid (Android)
+  final YtdlpToolService _ytdlpService;
 
   VideoInfo? _videoInfo;
   PlaylistInfo? _playlistInfo;
   bool _isLoading = false;
+
   /// True while [_videoInfo] is an explode-only display preview (empty formats).
   /// Download stays blocked until yt-dlp returns the real format ladder.
   bool _isPreviewOnly = false;
@@ -78,23 +77,17 @@ class VideoProvider extends ChangeNotifier {
     }
   }
 
-  VideoProvider(this._ytdlpService) {
-    if (_ytdlpService is! YtdlpToolService &&
-        _ytdlpService is! YtdlpService &&
-        _ytdlpService is! YtdlpServiceAndroid) {
-      throw ArgumentError(
-        'VideoProvider requires YtdlpToolService.',
-      );
-    }
-  }
+  VideoProvider(this._ytdlpService);
 
   VideoInfo? get videoInfo => _videoInfo;
   PlaylistInfo? get playlistInfo => _playlistInfo;
   bool get hasVideo => _videoInfo != null;
   bool get hasPlaylist => _playlistInfo != null;
   bool get isLoading => _isLoading;
+
   /// Display metadata is ready but formats are not — do not enable download yet.
   bool get isPreviewOnly => _isPreviewOnly;
+
   /// True when a real format ladder is present and download can proceed.
   bool get canDownload =>
       _videoInfo != null &&
@@ -131,6 +124,7 @@ class VideoProvider extends ChangeNotifier {
     }
     return _selectedAudioMergeStream?.formatId ?? _bestAudioFormatId;
   }
+
   int? get selectedHeight => _selectedResolution?.height;
 
   FormatInfo? get selectedAudioMergeStream => _selectedAudioMergeStream;
@@ -171,7 +165,8 @@ class VideoProvider extends ChangeNotifier {
     final dur = _videoInfo?.duration;
     final videoSize = format.estimatedFilesize(dur) ?? 0;
     if (format.hasAudio) return videoSize;
-    final audioSize = _selectedAudioMergeStream?.estimatedFilesize(dur) ??
+    final audioSize =
+        _selectedAudioMergeStream?.estimatedFilesize(dur) ??
         _videoInfo?.audioOnlyFormats.firstOrNull?.estimatedFilesize(dur) ??
         0;
     return videoSize + audioSize;
@@ -181,16 +176,17 @@ class VideoProvider extends ChangeNotifier {
     final dur = _videoInfo?.duration;
     final total = estimatedTotalSizeForFormat(format);
     if (total == 0) return format.formattedEstimatedFilesize(dur);
-    final isEst = format.isEstimated(dur) ||
+    final isEst =
+        format.isEstimated(dur) ||
         (_selectedAudioMergeStream?.isEstimated(dur) ?? false) ||
         (_videoInfo?.audioOnlyFormats.firstOrNull?.isEstimated(dur) ?? false);
     final str = total < 1024
         ? '$total B'
         : total < 1024 * 1024
-            ? '${(total / 1024).toStringAsFixed(1)} KB'
-            : total < 1024 * 1024 * 1024
-                ? '${(total / (1024 * 1024)).toStringAsFixed(1)} MB'
-                : '${(total / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
+        ? '${(total / 1024).toStringAsFixed(1)} KB'
+        : total < 1024 * 1024 * 1024
+        ? '${(total / (1024 * 1024)).toStringAsFixed(1)} MB'
+        : '${(total / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
     return isEst ? '~$str' : str;
   }
 
@@ -219,7 +215,10 @@ class VideoProvider extends ChangeNotifier {
     } catch (_) {}
     try {
       // Also attempt to cancel via service-specific channel if available
-      LoggingService().info('Video fetch cancelled by user', component: 'VideoProvider');
+      LoggingService().info(
+        'Video fetch cancelled by user',
+        component: 'VideoProvider',
+      );
     } catch (_) {}
     notifyListeners();
   }
@@ -289,16 +288,25 @@ class VideoProvider extends ChangeNotifier {
       await fetchVideoInfo(url, isRetryAfterUpdate: true);
     } else {
       _isLoading = false;
-      _errorMessage = 'Could not update yt-dlp automatically. Please check your internet connection.';
+      _errorMessage =
+          'Could not update yt-dlp automatically. Please check your internet connection.';
       notifyListeners();
     }
   }
 
-  Future<void> fetchVideoInfo(String url, {bool isRetryAfterUpdate = false}) async {
-    // Guard: if already loading, cancel previous via generation bump
-    if (_isLoading && !isRetryAfterUpdate) {
+  Future<void> fetchVideoInfo(
+    String url, {
+    bool isRetryAfterUpdate = false,
+    SearchVideoResult? previewHint,
+  }) async {
+    if (_isLoading && _currentUrl == url && !isRetryAfterUpdate) return;
+    final replacePrevious = _isLoading && !isRetryAfterUpdate;
+    if (replacePrevious) {
       _fetchGen++; // cancel previous
-      LoggingService().debug('fetchVideoInfo: cancelling previous fetch (isLoading guard)', component: 'VideoProvider');
+      LoggingService().debug(
+        'fetchVideoInfo: cancelling previous fetch (isLoading guard)',
+        component: 'VideoProvider',
+      );
     }
     final myGen = ++_fetchGen;
     LoggingService().debug(
@@ -315,31 +323,60 @@ class VideoProvider extends ChangeNotifier {
     _subtitlesEnabled = false;
     _embedSubtitles = false;
     _selectedSubtitles.clear();
-    _isPreviewOnly = false;
-    _videoInfo = null;
-    _loadingStatus = 'Initializing...';
+
+    final hasFullCache = _ytdlpService.hasCachedVideoInfo(url);
+    if (!hasFullCache && previewHint != null) {
+      _videoInfo = VideoInfo(
+        id: previewHint.id,
+        title: previewHint.title,
+        channel: previewHint.author,
+        channelUrl: '',
+        thumbnailUrl: previewHint.thumbnailUrl,
+        duration: previewHint.duration?.inSeconds ?? 0,
+        description: '',
+        viewCount: previewHint.viewCount ?? 0,
+        uploadDate: previewHint.uploadDate ?? '',
+        formats: const [],
+        url: url,
+        subtitles: const [],
+      );
+      _isPreviewOnly = true;
+      _loadingStatus = 'Loading stream formats...';
+    } else {
+      _isPreviewOnly = false;
+      _videoInfo = null;
+      _loadingStatus = 'Initializing...';
+    }
     if (!isRetryAfterUpdate) {
       _resetFetchLogs();
     }
     _appendFetchLog('Starting fetch request');
     _appendFetchLog('URL accepted');
+    if (previewHint != null && !hasFullCache) {
+      _appendFetchLog(
+        'Reusing search metadata for instant preview (formats pending)',
+      );
+    }
     notifyListeners();
     _lastStatusNotify = DateTime.now();
 
-    // Fast-path display metadata via youtube_explode (~250ms) while yt-dlp
-    // still owns the full format ladder required for download.
-    unawaited(_tryExplodePreview(url, myGen));
-
     // Pre-flight check: ensure yt-dlp is available before attempting fetch
     try {
-      final isAvailable = await _ytdlpService.isAvailable();
+      if (replacePrevious) {
+        await _ytdlpService.cancelFetch();
+        if (myGen != _fetchGen || _isDisposed) return;
+      }
+      final isAvailable = hasFullCache || await _ytdlpService.isAvailable();
+      if (myGen != _fetchGen || _isDisposed) return;
       if (!isAvailable) {
         _loadingStatus = 'Setting up yt-dlp automatically...';
         _appendFetchLog('yt-dlp missing locally. Auto-installing...');
         notifyListeners();
         final installed = await _autoUpdateYtdlp();
+        if (myGen != _fetchGen || _isDisposed) return;
         if (!installed) {
-          _errorMessage = 'Could not set up yt-dlp automatically. Please check your internet connection.';
+          _errorMessage =
+              'Could not set up yt-dlp automatically. Please check your internet connection.';
           _requiresYtdlpUpdate = true;
           _isLoading = false;
           notifyListeners();
@@ -348,7 +385,9 @@ class VideoProvider extends ChangeNotifier {
       }
     } catch (_) {}
 
+    if (myGen != _fetchGen || _isDisposed) return;
     try {
+      FetchPriority.beginInteractive();
       LoggingService().debug(
         'Calling _ytdlpService.getVideoInfo',
         component: 'VideoProvider',
@@ -362,9 +401,10 @@ class VideoProvider extends ChangeNotifier {
           if (myGen != _fetchGen) return; // cancelled
           _throttledStatusUpdate(status);
         },
-      ) as Future<VideoInfo>;
+      );
+      late final VideoInfo fetchedInfo;
       try {
-        _videoInfo = await future.timeout(
+        fetchedInfo = await future.timeout(
           const Duration(seconds: 130),
           onTimeout: () => throw TimeoutException(
             'Fetch timed out - VPN may be slowing connection, try again or disable VPN',
@@ -373,15 +413,19 @@ class VideoProvider extends ChangeNotifier {
         );
       } on TimeoutException {
         try {
-          // ignore: avoid_dynamic_calls
-          await _ytdlpService.cancelFetch();
+          if (myGen == _fetchGen) await _ytdlpService.cancelFetch();
         } catch (_) {}
         rethrow;
       }
       if (myGen != _fetchGen) {
-        LoggingService().debug('fetchVideoInfo gen $myGen stale after await, discarding', component: 'VideoProvider');
+        LoggingService().debug(
+          'fetchVideoInfo gen $myGen stale after await, discarding',
+          component: 'VideoProvider',
+        );
         return;
       }
+      _videoInfo = fetchedInfo;
+      _cachedResolutions = null;
       _isPreviewOnly = false;
       LoggingService().debug(
         'Got video info: ${_videoInfo?.title}',
@@ -401,16 +445,25 @@ class VideoProvider extends ChangeNotifier {
       }
     } catch (e, stackTrace) {
       if (myGen != _fetchGen) {
-        LoggingService().debug('fetchVideoInfo gen $myGen cancelled, ignoring error $e', component: 'VideoProvider');
+        LoggingService().debug(
+          'fetchVideoInfo gen $myGen cancelled, ignoring error $e',
+          component: 'VideoProvider',
+        );
         return;
       }
-      LoggingService().error('Error fetching video info: $e', component: 'VideoProvider', error: e, stackTrace: stackTrace);
+      LoggingService().error(
+        'Error fetching video info: $e',
+        component: 'VideoProvider',
+        error: e,
+        stackTrace: stackTrace,
+      );
       final rawError = e.toString();
       String cleanedError = _cleanErrorMessage(rawError);
       // Enrich timeout/VPN errors with user-friendly hint if not already present
       if (e is TimeoutException || _isVpnError(rawError)) {
         if (!cleanedError.toLowerCase().contains('vpn')) {
-          cleanedError = 'Fetch timed out - VPN may be slowing connection, try again or disable VPN. ($cleanedError)';
+          cleanedError =
+              'Fetch timed out - VPN may be slowing connection, try again or disable VPN. ($cleanedError)';
         }
       }
       _technicalError = cleanedError;
@@ -418,13 +471,17 @@ class VideoProvider extends ChangeNotifier {
 
       // Self-healing auto-update retry
       if (_requiresYtdlpUpdate && !isRetryAfterUpdate) {
-        _appendFetchLog('Detected outdated extractor. Automatically updating yt-dlp...');
+        _appendFetchLog(
+          'Detected outdated extractor. Automatically updating yt-dlp...',
+        );
         _loadingStatus = 'Updating yt-dlp to latest version...';
         notifyListeners();
 
         final updateSuccess = await _autoUpdateYtdlp();
         if (updateSuccess && myGen == _fetchGen) {
-          _appendFetchLog('yt-dlp updated successfully! Retrying video fetch...');
+          _appendFetchLog(
+            'yt-dlp updated successfully! Retrying video fetch...',
+          );
           _loadingStatus = 'Retrying video fetch...';
           notifyListeners();
           return fetchVideoInfo(url, isRetryAfterUpdate: true);
@@ -441,67 +498,12 @@ class VideoProvider extends ChangeNotifier {
       _videoInfo = null;
       _isPreviewOnly = false;
     } finally {
+      FetchPriority.endInteractive();
       if (myGen == _fetchGen) {
         _isLoading = false;
         _loadingStatus = '';
         notifyListeners();
       }
-    }
-  }
-
-  // Reusable YoutubeExplode client for HTTP keep-alive connection pooling
-  explode.YoutubeExplode? _explodeClient;
-
-  /// Instant display metadata via youtube_explode. Never blocks download:
-  /// formats stay empty until yt-dlp returns the real ladder. Failures are
-  /// silent — the yt-dlp path remains the source of truth.
-  Future<void> _tryExplodePreview(String url, int gen) async {
-    try {
-      final idStr = explode.VideoId.parseVideoId(url);
-      if (idStr == null) return;
-      final videoId = explode.VideoId(idStr);
-
-      final yt = _explodeClient ??= explode.YoutubeExplode();
-      final video = await yt.videos
-          .get(videoId)
-          .timeout(const Duration(seconds: 4));
-      if (gen != _fetchGen || _isDisposed) return;
-      // Do not clobber a full result that landed first.
-      if (_videoInfo != null && !_isPreviewOnly) return;
-      // H9: do not install a preview after yt-dlp already failed for this gen.
-      if (_errorMessage != null && gen == _fetchGen) return;
-
-      final thumb = video.thumbnails.mediumResUrl;
-      final preview = VideoInfo(
-        id: videoId.value,
-        title: video.title,
-        channel: video.author,
-        channelUrl: 'https://www.youtube.com/channel/${video.channelId.value}',
-        thumbnailUrl: thumb,
-        duration: video.duration?.inSeconds ?? 0,
-        description: video.description,
-        viewCount: video.engagement.viewCount.toInt(),
-        uploadDate: video.uploadDate?.toIso8601String() ?? '',
-        formats: const [],
-        url: url,
-        subtitles: const [],
-      );
-      _videoInfo = preview;
-      _isPreviewOnly = true;
-      _playlistInfo = null;
-      _appendFetchLog('Preview metadata loaded (formats pending)');
-      _loadingStatus = 'Loading stream formats...';
-      notifyListeners();
-      LoggingService().debug(
-        'Explode preview: ${preview.title}',
-        component: 'VideoProvider',
-      );
-    } catch (e) {
-      // Non-fatal: yt-dlp continues independently.
-      LoggingService().debug(
-        'Explode preview skipped: $e',
-        component: 'VideoProvider',
-      );
     }
   }
 
@@ -584,7 +586,8 @@ class VideoProvider extends ChangeNotifier {
         if (audioIsEstimated) isEstimate = true;
       }
       // If still 0 (e.g. live or missing duration), keep as estimated so UI shows ~ rather than Unknown
-      if (estimatedSize == 0 && (bestFormat.tbr != null || bestFormat.videoBitrate != null)) {
+      if (estimatedSize == 0 &&
+          (bestFormat.tbr != null || bestFormat.videoBitrate != null)) {
         isEstimate = true;
       }
 
@@ -648,7 +651,9 @@ class VideoProvider extends ChangeNotifier {
       for (final f in res.formats) {
         if (f.filesize != null) continue; // exact exists
         if (f.filesizeApprox != null) continue; // approx exists (already ~)
-        if (f.url == null || f.url!.isEmpty || !f.url!.startsWith('http')) continue;
+        if (f.url == null || f.url!.isEmpty || !f.url!.startsWith('http')) {
+          continue;
+        }
         if (seen.contains(f.formatId)) continue;
         // Limit to 2 per resolution to be efficient
         final perResCount = toProbe.where((x) => x.height == f.height).length;
@@ -678,10 +683,13 @@ class VideoProvider extends ChangeNotifier {
         if (fmt.url == null) return null;
         try {
           final uri = Uri.parse(fmt.url!);
-          final req = await client.openUrl('HEAD', uri).timeout(const Duration(seconds: 3));
+          final req = await client
+              .openUrl('HEAD', uri)
+              .timeout(const Duration(seconds: 3));
           req.headers.set('User-Agent', 'AeroTube/1.0');
           final resp = await req.close().timeout(const Duration(seconds: 3));
-          final lenStr = resp.headers.value(HttpHeaders.contentLengthHeader) ??
+          final lenStr =
+              resp.headers.value(HttpHeaders.contentLengthHeader) ??
               resp.headers.value('content-length');
           final len = int.tryParse(lenStr ?? '');
           await resp.drain();
@@ -702,7 +710,10 @@ class VideoProvider extends ChangeNotifier {
         if (res != null) {
           _videoInfo!.applyProbedSize(res.key, res.value);
           anyApplied = true;
-          LoggingService().debug('HEAD probed ${res.key}: ${res.value} bytes', component: 'VideoProvider');
+          LoggingService().debug(
+            'HEAD probed ${res.key}: ${res.value} bytes',
+            component: 'VideoProvider',
+          );
         }
       }
 
@@ -745,8 +756,13 @@ class VideoProvider extends ChangeNotifier {
     return '${height}p';
   }
 
-  Future<void> fetchPlaylistInfo(String url, {bool isRetryAfterUpdate = false}) async {
-    if (_isLoading && !isRetryAfterUpdate) _fetchGen++;
+  Future<void> fetchPlaylistInfo(
+    String url, {
+    bool isRetryAfterUpdate = false,
+  }) async {
+    if (_isLoading && _currentUrl == url && !isRetryAfterUpdate) return;
+    final replacePrevious = _isLoading && !isRetryAfterUpdate;
+    if (replacePrevious) _fetchGen++;
     final myGen = ++_fetchGen;
     _isLoading = true;
     _errorMessage = null;
@@ -765,14 +781,21 @@ class VideoProvider extends ChangeNotifier {
 
     // Pre-flight check: ensure yt-dlp is available before attempting playlist fetch
     try {
+      if (replacePrevious) {
+        await _ytdlpService.cancelFetch();
+        if (myGen != _fetchGen || _isDisposed) return;
+      }
       final isAvailable = await _ytdlpService.isAvailable();
+      if (myGen != _fetchGen || _isDisposed) return;
       if (!isAvailable) {
         _loadingStatus = 'Setting up yt-dlp automatically...';
         _appendFetchLog('yt-dlp missing locally. Auto-installing...');
         notifyListeners();
         final installed = await _autoUpdateYtdlp();
+        if (myGen != _fetchGen || _isDisposed) return;
         if (!installed) {
-          _errorMessage = 'Could not set up yt-dlp automatically. Please check your internet connection.';
+          _errorMessage =
+              'Could not set up yt-dlp automatically. Please check your internet connection.';
           _requiresYtdlpUpdate = true;
           _isLoading = false;
           notifyListeners();
@@ -781,16 +804,19 @@ class VideoProvider extends ChangeNotifier {
       }
     } catch (_) {}
 
+    if (myGen != _fetchGen || _isDisposed) return;
     try {
+      FetchPriority.beginInteractive();
       final future = _ytdlpService.getPlaylistInfo(
         url,
         onProgress: (status) {
           if (myGen != _fetchGen) return;
           _throttledStatusUpdate(status);
         },
-      ) as Future<PlaylistInfo>;
+      );
+      late final PlaylistInfo fetchedPlaylist;
       try {
-        _playlistInfo = await future.timeout(
+        fetchedPlaylist = await future.timeout(
           // C3: service allows 6 minutes for large playlists. Provider must not
           // give up at 90s — that made every large playlist always fail.
           const Duration(minutes: 7),
@@ -801,24 +827,30 @@ class VideoProvider extends ChangeNotifier {
         );
       } on TimeoutException {
         try {
-          // ignore: avoid_dynamic_calls
-          await _ytdlpService.cancelFetch();
+          if (myGen == _fetchGen) await _ytdlpService.cancelFetch();
         } catch (_) {}
         rethrow;
       }
       if (myGen != _fetchGen) return;
+      _playlistInfo = fetchedPlaylist;
       _videoInfo = null;
       _appendFetchLog(
         'Playlist loaded (${_playlistInfo?.videoCount ?? 0} videos)',
       );
     } catch (e, stackTrace) {
       if (myGen != _fetchGen) return;
-      LoggingService().error('Error fetching playlist info: $e', component: 'VideoProvider', error: e, stackTrace: stackTrace);
+      LoggingService().error(
+        'Error fetching playlist info: $e',
+        component: 'VideoProvider',
+        error: e,
+        stackTrace: stackTrace,
+      );
       final rawError = e.toString();
       String cleanedError = _cleanErrorMessage(rawError);
       if (e is TimeoutException || _isVpnError(rawError)) {
         if (!cleanedError.toLowerCase().contains('vpn')) {
-          cleanedError = 'Fetch timed out - VPN may be slowing connection, try again or disable VPN. ($cleanedError)';
+          cleanedError =
+              'Fetch timed out - VPN may be slowing connection, try again or disable VPN. ($cleanedError)';
         }
       }
       _technicalError = cleanedError;
@@ -826,13 +858,17 @@ class VideoProvider extends ChangeNotifier {
 
       // Self-healing auto-update retry
       if (_requiresYtdlpUpdate && !isRetryAfterUpdate) {
-        _appendFetchLog('Detected outdated extractor. Automatically updating yt-dlp...');
+        _appendFetchLog(
+          'Detected outdated extractor. Automatically updating yt-dlp...',
+        );
         _loadingStatus = 'Updating yt-dlp to latest version...';
         notifyListeners();
 
         final updateSuccess = await _autoUpdateYtdlp();
         if (updateSuccess && myGen == _fetchGen) {
-          _appendFetchLog('yt-dlp updated successfully! Retrying playlist fetch...');
+          _appendFetchLog(
+            'yt-dlp updated successfully! Retrying playlist fetch...',
+          );
           _loadingStatus = 'Retrying playlist fetch...';
           notifyListeners();
           return fetchPlaylistInfo(url, isRetryAfterUpdate: true);
@@ -845,6 +881,7 @@ class VideoProvider extends ChangeNotifier {
       _appendFetchLog('Playlist fetch failed: $cleanedError');
       _playlistInfo = null;
     } finally {
+      FetchPriority.endInteractive();
       if (myGen == _fetchGen) {
         _isLoading = false;
         _loadingStatus = '';
@@ -1082,8 +1119,6 @@ class VideoProvider extends ChangeNotifier {
   @override
   void dispose() {
     _isDisposed = true;
-    _explodeClient?.close();
-    _explodeClient = null;
     super.dispose();
   }
 }

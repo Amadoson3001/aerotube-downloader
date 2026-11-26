@@ -949,13 +949,16 @@ class MainActivity : FlutterActivity() {
                             val url = call.argument<String>("url")
                             val cookiesPath = call.argument<String>("cookies_path")
                             val userAgent = call.argument<String>("user_agent")
+                            val requestId = call.argument<String>("request_id")
 
                             if (url == null) {
                                 safeError("INVALID_ARGUMENT", "URL is required", null)
                                 return@launch
                             }
 
-                            val infoJson = YtDlpEngine.getVideoInfo(applicationContext, url, cookiesPath, userAgent)
+                            val infoJson = YtDlpEngine.getVideoInfo(
+                                applicationContext, url, cookiesPath, userAgent, requestId
+                            )
                             safeSuccess(infoJson)
                         }
                         "getPlaylistInfo" -> {
@@ -963,6 +966,7 @@ class MainActivity : FlutterActivity() {
                             val cookiesPath = call.argument<String>("cookies_path")
                             val userAgent = call.argument<String>("user_agent")
                             val playlistItems = call.argument<String>("playlist_items")
+                            val requestId = call.argument<String>("request_id")
 
                             if (url == null) {
                                 safeError("INVALID_ARGUMENT", "URL is required", null)
@@ -970,9 +974,14 @@ class MainActivity : FlutterActivity() {
                             }
 
                             val playlistJson = YtDlpEngine.getPlaylistInfo(
-                                applicationContext, url, cookiesPath, userAgent, playlistItems
+                                applicationContext, url, cookiesPath, userAgent, playlistItems, requestId
                             )
                             safeSuccess(playlistJson)
+                        }
+                        "cancelFetch" -> {
+                            val requestId = call.argument<String>("request_id")
+                            val cancelled = YtDlpEngine.cancelFetch(requestId)
+                            safeSuccess(cancelled)
                         }
                         "downloadVideo" -> {
                             val url = call.argument<String>("url")
@@ -1055,12 +1064,13 @@ class MainActivity : FlutterActivity() {
                             val limit = call.argument<Int>("limit") ?: 10
                             val cookiesPath = call.argument<String>("cookies_path")
                             val userAgent = call.argument<String>("user_agent")
+                            val requestId = call.argument<String>("request_id")
                             if (query.isNullOrBlank()) {
                                 safeError("INVALID_ARGUMENT", "query is required", null)
                                 return@launch
                             }
                             val searchJson = YtDlpEngine.searchVideos(
-                                applicationContext, query, limit, cookiesPath, userAgent
+                                applicationContext, query, limit, cookiesPath, userAgent, requestId
                             )
                             safeSuccess(searchJson)
                         }

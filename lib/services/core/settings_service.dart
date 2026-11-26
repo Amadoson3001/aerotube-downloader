@@ -44,6 +44,12 @@ class SettingsService {
 
   AppSettings get settings => _settings;
 
+  /// Updates the in-memory settings snapshot immediately for optimistic UI
+  /// feedback before asynchronous persistence completes.
+  void applyInMemory(AppSettings next) {
+    _settings = next;
+  }
+
   // Individual getters for direct property access
   String? get ytdlpPath => _settings.ytdlpPath;
   String? get ffmpegPath => _settings.ffmpegPath;
@@ -249,48 +255,93 @@ class SettingsService {
     }
   }
 
-  Future<void> setMaxConcurrentDownloads(int value) async {
-    _settings = _settings.copyWith(maxConcurrentDownloads: value);
+  Future<void> setMaxConcurrentDownloads(
+    int value, {
+    bool updateInMemory = true,
+  }) async {
+    if (updateInMemory) {
+      _settings = _settings.copyWith(maxConcurrentDownloads: value);
+    }
     await _prefs.setInt(keyMaxConcurrentDownloads, value);
   }
 
-  Future<void> setDefaultQuality(String value) async {
-    _settings = _settings.copyWith(defaultQuality: value);
+  Future<void> setDefaultQuality(
+    String value, {
+    bool updateInMemory = true,
+  }) async {
+    if (updateInMemory) {
+      _settings = _settings.copyWith(defaultQuality: value);
+    }
     await _prefs.setString(keyDefaultQuality, value);
   }
 
-  Future<void> setEmbedThumbnail(bool value) async {
-    _settings = _settings.copyWith(embedThumbnail: value);
+  Future<void> setEmbedThumbnail(
+    bool value, {
+    bool updateInMemory = true,
+  }) async {
+    if (updateInMemory) {
+      _settings = _settings.copyWith(embedThumbnail: value);
+    }
     await _prefs.setBool(keyEmbedThumbnail, value);
   }
 
-  Future<void> setEmbedMetadata(bool value) async {
-    _settings = _settings.copyWith(embedMetadata: value);
+  Future<void> setEmbedMetadata(
+    bool value, {
+    bool updateInMemory = true,
+  }) async {
+    if (updateInMemory) {
+      _settings = _settings.copyWith(embedMetadata: value);
+    }
     await _prefs.setBool(keyEmbedMetadata, value);
   }
 
-  Future<void> setAutoMergeStreams(bool value) async {
-    _settings = _settings.copyWith(autoMergeStreams: value);
+  Future<void> setAutoMergeStreams(
+    bool value, {
+    bool updateInMemory = true,
+  }) async {
+    if (updateInMemory) {
+      _settings = _settings.copyWith(autoMergeStreams: value);
+    }
     await _prefs.setBool(keyAutoMergeStreams, value);
   }
 
-  Future<void> setDefaultSubtitleLanguage(String value) async {
-    _settings = _settings.copyWith(defaultSubtitleLanguage: value);
+  Future<void> setDefaultSubtitleLanguage(
+    String value, {
+    bool updateInMemory = true,
+  }) async {
+    if (updateInMemory) {
+      _settings = _settings.copyWith(defaultSubtitleLanguage: value);
+    }
     await _prefs.setString(keyDefaultSubtitleLanguage, value);
   }
 
-  Future<void> setThemeMode(ThemeMode mode) async {
-    _settings = _settings.copyWith(themeMode: mode);
+  Future<void> setThemeMode(
+    ThemeMode mode, {
+    bool updateInMemory = true,
+  }) async {
+    if (updateInMemory) {
+      _settings = _settings.copyWith(themeMode: mode);
+    }
     await _prefs.setInt(keyThemeMode, mode.index);
   }
 
-  Future<void> setAmoledDark(bool value) async {
-    _settings = _settings.copyWith(amoledDark: value);
+  Future<void> setAmoledDark(
+    bool value, {
+    bool updateInMemory = true,
+  }) async {
+    if (updateInMemory) {
+      _settings = _settings.copyWith(amoledDark: value);
+    }
     await _prefs.setBool(keyAmoledDark, value);
   }
 
-  Future<void> setAccentColor(int? colorValue) async {
-    _settings = _settings.copyWith(accentColorValue: colorValue);
+  Future<void> setAccentColor(
+    int? colorValue, {
+    bool updateInMemory = true,
+  }) async {
+    if (updateInMemory) {
+      _settings = _settings.copyWith(accentColorValue: colorValue);
+    }
     if (colorValue == null) {
       await _prefs.remove(keyAccentColor);
     } else {
@@ -298,13 +349,23 @@ class SettingsService {
     }
   }
 
-  Future<void> setEnableAnimations(bool value) async {
-    _settings = _settings.copyWith(enableAnimations: value);
+  Future<void> setEnableAnimations(
+    bool value, {
+    bool updateInMemory = true,
+  }) async {
+    if (updateInMemory) {
+      _settings = _settings.copyWith(enableAnimations: value);
+    }
     await _prefs.setBool(keyEnableAnimations, value);
   }
 
-  Future<void> setEnableCookies(bool value) async {
-    _settings = _settings.copyWith(enableCookies: value);
+  Future<void> setEnableCookies(
+    bool value, {
+    bool updateInMemory = true,
+  }) async {
+    if (updateInMemory) {
+      _settings = _settings.copyWith(enableCookies: value);
+    }
     await _prefs.setBool(keyEnableCookies, value);
   }
 
@@ -335,28 +396,53 @@ class SettingsService {
     }
   }
 
-  Future<void> setEnableNotifications(bool value) async {
-    _settings = _settings.copyWith(enableNotifications: value);
+  Future<void> setEnableNotifications(
+    bool value, {
+    bool updateInMemory = true,
+  }) async {
+    if (updateInMemory) {
+      _settings = _settings.copyWith(enableNotifications: value);
+    }
     await _prefs.setBool(keyEnableNotifications, value);
   }
 
-  Future<void> setAutoCheckUpdates(bool value) async {
-    _settings = _settings.copyWith(autoCheckUpdates: value);
+  Future<void> setAutoCheckUpdates(
+    bool value, {
+    bool updateInMemory = true,
+  }) async {
+    if (updateInMemory) {
+      _settings = _settings.copyWith(autoCheckUpdates: value);
+    }
     await _prefs.setBool(keyAutoCheckUpdates, value);
   }
 
-  Future<void> setSponsorBlockEnabled(bool value) async {
-    _settings = _settings.copyWith(sponsorBlockEnabled: value);
+  Future<void> setSponsorBlockEnabled(
+    bool value, {
+    bool updateInMemory = true,
+  }) async {
+    if (updateInMemory) {
+      _settings = _settings.copyWith(sponsorBlockEnabled: value);
+    }
     await _prefs.setBool(keySponsorBlockEnabled, value);
   }
 
-  Future<void> setUseDownloadArchive(bool value) async {
-    _settings = _settings.copyWith(useDownloadArchive: value);
+  Future<void> setUseDownloadArchive(
+    bool value, {
+    bool updateInMemory = true,
+  }) async {
+    if (updateInMemory) {
+      _settings = _settings.copyWith(useDownloadArchive: value);
+    }
     await _prefs.setBool(keyUseDownloadArchive, value);
   }
 
-  Future<void> setEnableLogging(bool value) async {
-    _settings = _settings.copyWith(enableLogging: value);
+  Future<void> setEnableLogging(
+    bool value, {
+    bool updateInMemory = true,
+  }) async {
+    if (updateInMemory) {
+      _settings = _settings.copyWith(enableLogging: value);
+    }
     await _prefs.setBool(keyEnableLogging, value);
   }
 

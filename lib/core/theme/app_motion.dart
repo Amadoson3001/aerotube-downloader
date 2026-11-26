@@ -59,3 +59,26 @@ Duration appMotionDuration(BuildContext context, Duration base) {
   final reduceMotion = MediaQuery.maybeDisableAnimationsOf(context) ?? false;
   return reduceMotion ? Duration.zero : base;
 }
+
+/// Non-listening variant of [appMotionDuration] safe for lifecycle callbacks
+/// such as `didUpdateWidget` or `initState`.
+Duration readAppMotionDuration(BuildContext context, Duration base) {
+  bool enabled = true;
+  try {
+    enabled = Provider.of<PlatformSettingsProvider>(
+      context,
+      listen: false,
+    ).enableAnimations;
+  } catch (_) {
+    enabled = true;
+  }
+  if (!enabled) return Duration.zero;
+  final reduceMotion = MediaQuery.maybeDisableAnimationsOf(context) ?? false;
+  return reduceMotion ? Duration.zero : base;
+}
+
+/// Returns true when animations are enabled in both app settings and OS
+/// accessibility preferences.
+bool appMotionEnabled(BuildContext context) {
+  return appMotionDuration(context, AppMotion.fast) > Duration.zero;
+}

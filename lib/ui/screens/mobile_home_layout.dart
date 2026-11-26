@@ -100,8 +100,12 @@ class MobileShell extends StatelessWidget {
                     child: Column(
                       children: [
                         Expanded(
-                          child: IndexedStack(
+                          child: _MobileSmoothIndexedStack(
                             index: currentIndex,
+                            duration: appMotionDuration(
+                              context,
+                              AppMotion.short,
+                            ),
                             children: screens,
                           ),
                         ),
@@ -114,7 +118,11 @@ class MobileShell extends StatelessWidget {
             : Column(
                 children: [
                   Expanded(
-                    child: IndexedStack(index: currentIndex, children: screens),
+                    child: _MobileSmoothIndexedStack(
+                      index: currentIndex,
+                      duration: appMotionDuration(context, AppMotion.short),
+                      children: screens,
+                    ),
                   ),
                   // Persistent 56 dp mini download tray docked directly above the bottom navigation bar
                   const MiniDownloadTray(),
@@ -188,7 +196,7 @@ class _AeroBottomNavBar extends StatelessWidget {
                       AnimatedContainer(
                         duration: appMotionDuration(context, AppMotion.short),
                         curve: AppMotion.emphasized,
-                        width: 52,
+                        width: isSelected ? 52 : 28,
                         height: 28,
                         decoration: BoxDecoration(
                           color: isSelected
@@ -430,5 +438,79 @@ class MobileHomeLayout extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return const MobileHomeScreen();
+  }
+}
+
+/// Preserves tab state in an [IndexedStack] while disabling tickers on hidden
+/// tabs via [TickerMode] and running a short, reduced-motion-aware fade.
+class _MobileSmoothIndexedStack extends StatefulWidget {
+  final int index;
+  final Duration duration;
+  final List<Widget> children;
+
+  const _MobileSmoothIndexedStack({
+    required this.index,
+    required this.duration,
+    required this.children,
+  });
+
+  @override
+  State<_MobileSmoothIndexedStack> createState() =>
+      _MobileSmoothIndexedStackState();
+}
+
+class _MobileSmoothIndexedStackState extends State<_MobileSmoothIndexedStack>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+  late final Animation<double> _opacity;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: widget.duration,
+      value: 1.0,
+    );
+    _opacity = Tween<double>(begin: 0.94, end: 1.0).animate(
+      CurvedAnimation(parent: _controller, curve: AppMotion.decelerate),
+    );
+  }
+
+  @override
+  void didUpdateWidget(covariant _MobileSmoothIndexedStack oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (_controller.duration != widget.duration) {
+      _controller.duration = widget.duration;
+    }
+    if (oldWidget.index != widget.index) {
+      if (widget.duration == Duration.zero) {
+        _controller.value = 1.0;
+      } else {
+        _controller.forward(from: 0.0);
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final stack = IndexedStack(
+      index: widget.index,
+      children: [
+        for (var i = 0; i < widget.children.length; i++)
+          TickerMode(
+            enabled: i == widget.index,
+            child: widget.children[i],
+          ),
+      ],
+    );
+    if (widget.duration == Duration.zero) return stack;
+    return FadeTransition(opacity: _opacity, child: stack);
   }
 }
