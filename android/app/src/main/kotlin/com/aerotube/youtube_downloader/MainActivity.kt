@@ -942,8 +942,7 @@ class MainActivity : FlutterActivity() {
                             safeSuccess(version)
                         }
                         "getFfmpegVersion" -> {
-                            YtDlpEngine.ensureInit(applicationContext)
-                            safeSuccess(YtDlpEngine.ffmpegVersion())
+                            safeSuccess(YtDlpEngine.ffmpegVersion(applicationContext))
                         }
                         "getVideoInfo" -> {
                             val url = call.argument<String>("url")

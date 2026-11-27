@@ -589,12 +589,14 @@ _prune_challenge_cache()
   Process? _activeVideoProcess;
   Process? _activePlaylistProcess;
   int _videoFetchGen = 0;
+  int _videoCancelGen = 0;
   // H29: set while cancelFetch is killing an in-flight playlist so the
   // non-zero exit is reported as Cancelled, not a hard failure.
   bool _playlistCancelRequested = false;
 
   @override
   Future<void> cancelFetch() async {
+    _videoCancelGen++;
     _videoFetchGen++;
     _playlistCancelRequested = true;
     _videoCache.clearInFlight();
@@ -629,19 +631,22 @@ _prune_challenge_cache()
     String url, {
     Function(String status)? onProgress,
   }) async {
+    final cancelGen = _videoCancelGen;
     if (!_isInitialized) await initialize();
+    if (cancelGen != _videoCancelGen) throw YtdlpException('Cancelled');
     if (_extractorCachePath == null) await _ensureExtractorCacheAndPlugin();
+    if (cancelGen != _videoCancelGen) throw YtdlpException('Cancelled');
 
     final cacheKey = _buildVideoInfoCacheKey(url);
     final cachedInfo = _videoCache.get(cacheKey);
     if (cachedInfo != null) {
-      onProgress?.call('Using cached video metadata...');
+      onProgress?.call('Using saved video details...');
       return cachedInfo;
     }
 
     final existingInFlight = _videoCache.getInFlight(cacheKey);
     if (existingInFlight != null) {
-      onProgress?.call('Fetching video metadata...');
+      onProgress?.call('Finding video details and available formats...');
       return existingInFlight;
     }
 
@@ -665,8 +670,7 @@ _prune_challenge_cache()
       _activeVideoProcess?.kill();
     } catch (_) {}
 
-    onProgress?.call('Connecting...');
-    onProgress?.call('Fetching video metadata...');
+    onProgress?.call('Finding video details and available formats...');
 
     final stopwatch = Stopwatch()..start();
     // Overall budget still allows the full resilient chain (fast → patient →
@@ -775,7 +779,7 @@ _prune_challenge_cache()
       if (remainingOverall().inSeconds < 5) {
         throw YtdlpException(_vpnFriendlyMessage(lastError));
       }
-      onProgress?.call('Retrying with longer timeouts...');
+      onProgress?.call('Connection is slow. Trying again...');
       LoggingService().info(
         'Retrying getVideoInfo with patient timeouts due to: $lastError',
         component: 'YtdlpService',
@@ -810,7 +814,7 @@ _prune_challenge_cache()
       if (authError != null) {
         if (lastError.contains('Sign in to confirm you') ||
             lastError.contains('bot')) {
-          onProgress?.call('Retrying with alternative player client...');
+          onProgress?.call('Trying another way to access the video...');
           try {
             final retryArgs = <String>[
               '--ignore-config',
@@ -883,7 +887,7 @@ _prune_challenge_cache()
         );
       }
       onProgress?.call(
-        'Retrying without browser cookies (VPN/DPAPI fallback)...',
+        'Trying again without browser cookies...',
       );
       LoggingService().info(
         'Retrying getVideoInfo without cookies due to: $lastError',
@@ -921,7 +925,7 @@ _prune_challenge_cache()
         throw YtdlpException(_vpnFriendlyMessage(lastError));
       }
       onProgress?.call(
-        'Retrying with VPN-tolerant settings (IPv4 + Android client)...',
+        'Trying different connection settings...',
       );
       LoggingService().info(
         'Retrying getVideoInfo with VPN fallback due to: $lastError',
@@ -952,7 +956,7 @@ _prune_challenge_cache()
         (lastError.contains('DPAPI') ||
             lastError.contains('Failed to decrypt')) &&
         _cookieBrowser != null) {
-      onProgress?.call('Retrying without browser cookies...');
+      onProgress?.call('Trying again without browser cookies...');
       try {
         final argsWithoutBrowser = <String>[
           '--ignore-config',
@@ -1006,7 +1010,7 @@ _prune_challenge_cache()
     String cacheKey,
     Function(String status)? onProgress,
   ) async {
-    onProgress?.call('Processing video formats...');
+    onProgress?.call('Preparing available formats...');
     final info = await compute(_parseVideoInfoIsolate, stdout);
     _videoCache.put(cacheKey, info);
     // M5: do not spam a system notification for every routine metadata fetch.

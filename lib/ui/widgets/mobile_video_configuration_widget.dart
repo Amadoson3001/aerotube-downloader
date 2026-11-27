@@ -16,13 +16,14 @@ import '../../providers/platform_settings_provider.dart';
 import '../../providers/video_provider.dart';
 import '../components/components.dart';
 import 'video_configuration_controls.dart';
+import 'video_fetch_loading.dart';
 
 /// Full-screen Android video configuration panel conforming to AeroTube redesign spec.
 ///
 /// Features:
 /// - Collapsing header with 16:9 [ThumbnailTile] and bottom gradient scrim overlay
 ///   (title, channel, duration chip).
-/// - [AeroSegmentedControl] (Video | Audio) with a linear sliding indicator.
+/// - Video and Audio modes with animated quality controls.
 /// - Wrapping [FormatChip] grid with estimated size under each label.
 /// - Codec variant selection with HDR and 60fps tags.
 /// - Collapsible "More options" accordion ([SettingsRow]s for container, subtitles, SponsorBlock, trim).
@@ -85,23 +86,20 @@ class _MobileVideoConfigurationWidgetState
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      // Video | Audio Segmented Control
-                      AeroSegmentedControl(
+                      DownloadModeControls(
                         isAudio: videoProvider.audioOnly,
-                        onChanged: (isAudio) =>
-                            videoProvider.setAudioOnly(isAudio),
+                        onChanged: videoProvider.setAudioOnly,
+                        qualityOptions: videoProvider.audioOnly
+                            ? AudioQualityConfigurationSection(
+                                provider: videoProvider,
+                                horizontalScrollTiers: true,
+                              )
+                            : _buildVideoQualitySection(
+                                context,
+                                aero,
+                                videoProvider,
+                              ),
                       ),
-                      const SizedBox(height: AeroSpace.xl),
-
-                      // Quality Section (Video format chips or Audio tier chips)
-                      if (!videoProvider.audioOnly) ...[
-                        _buildVideoQualitySection(context, aero, videoProvider),
-                      ] else ...[
-                        AudioQualityConfigurationSection(
-                          provider: videoProvider,
-                          horizontalScrollTiers: true,
-                        ),
-                      ],
                       const SizedBox(height: AeroSpace.xl),
 
                       // Collapsible "More options" accordion
@@ -595,6 +593,16 @@ class _MobileVideoConfigurationWidgetState
     AeroColors aero,
     VideoProvider provider,
   ) {
+    void cancel() {
+      final onClear = widget.onClear;
+      if (onClear != null) {
+        onClear();
+      } else {
+        provider.cancelFetch();
+        Navigator.pop(context);
+      }
+    }
+
     return Scaffold(
       backgroundColor: aero.bg,
       appBar: AppBar(
@@ -602,85 +610,24 @@ class _MobileVideoConfigurationWidgetState
         elevation: 0,
         leading: IconButton(
           icon: const Icon(Symbols.arrow_back_rounded),
-          onPressed: () {
-            provider.cancelFetch();
-            if (widget.onClear != null) {
-              widget.onClear!();
-            } else {
-              Navigator.pop(context);
-            }
-          },
+          tooltip: 'Back',
+          onPressed: cancel,
         ),
-        title: Text('Loading Video', style: AeroText.titleSm),
+        title: Text('Download options', style: AeroText.titleSm),
       ),
-      body: AeroShimmerScope(
-        child: Padding(
-          padding: const EdgeInsets.all(AeroSpace.xxl),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const AspectRatio(
-                aspectRatio: 16 / 9,
-                child: ThumbnailTile(
-                  borderRadius: BorderRadius.all(Radius.circular(14)),
-                  fallback: AeroSkeletonBox(
-                    borderRadius: BorderRadius.all(Radius.circular(14)),
-                  ),
-                ),
-              ),
-              const SizedBox(height: AeroSpace.xl),
-              const AeroSkeletonBox(height: 18, widthFactor: 0.9, phaseOffset: 0.08),
-              const SizedBox(height: AeroSpace.md),
-              const AeroSkeletonBox(height: 12, widthFactor: 0.5, phaseOffset: 0.16),
-              const SizedBox(height: AeroSpace.xxl),
-              const Row(
-                children: [
-                  Expanded(
-                    child: AeroSkeletonBox(
-                      height: 44,
-                      widthFactor: 1.0,
-                      phaseOffset: 0.24,
-                    ),
-                  ),
-                  SizedBox(width: AeroSpace.sm),
-                  Expanded(
-                    child: AeroSkeletonBox(
-                      height: 44,
-                      widthFactor: 1.0,
-                      phaseOffset: 0.32,
-                    ),
-                  ),
-                  SizedBox(width: AeroSpace.sm),
-                  Expanded(
-                    child: AeroSkeletonBox(
-                      height: 44,
-                      widthFactor: 1.0,
-                      phaseOffset: 0.40,
-                    ),
-                  ),
-                ],
-              ),
-              const Spacer(),
-              Row(
-                children: [
-                  Expanded(
-                    child: AeroButton(
-                      variant: AeroButtonVariant.ghost,
-                      text: 'Cancel',
-                      onPressed: () {
-                        provider.cancelFetch();
-                        if (widget.onClear != null) {
-                          widget.onClear!();
-                        } else {
-                          Navigator.pop(context);
-                        }
-                      },
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(AeroSpace.xxl),
+        child: VideoFetchLoading(
+          status: provider.loadingStatus,
+          video: provider.isPreviewOnly ? provider.videoInfo : null,
+        ),
+      ),
+      bottomNavigationBar: SafeArea(
+        minimum: const EdgeInsets.all(AeroSpace.lg),
+        child: AeroButton(
+          variant: AeroButtonVariant.tonal,
+          text: 'Cancel',
+          onPressed: cancel,
         ),
       ),
     );

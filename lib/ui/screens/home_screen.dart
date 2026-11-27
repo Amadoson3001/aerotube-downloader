@@ -35,6 +35,7 @@ class _HomeScreenState extends State<HomeScreen> {
   final _urlController = TextEditingController();
   final _urlFocusNode = FocusNode();
   VideoProvider? _videoProvider;
+  String _lastFetchUrl = '';
 
   @override
   void initState() {
@@ -62,10 +63,12 @@ class _HomeScreenState extends State<HomeScreen> {
   void _onVideoProviderChange() {
     if (!mounted || _videoProvider == null) return;
 
-    // Sync URL controller
-    if (_urlController.text != _videoProvider!.currentUrl &&
-        _videoProvider!.currentUrl.isNotEmpty) {
-      _urlController.text = _videoProvider!.currentUrl;
+    final url = _videoProvider!.currentUrl;
+    if (url != _lastFetchUrl) {
+      _lastFetchUrl = url;
+      if (url.isNotEmpty && _urlController.text != url) {
+        _urlController.text = url;
+      }
     }
 
     // C7: never force-unwrap errorMessage. H23: only re-show the auth dialog
@@ -142,7 +145,6 @@ class _HomeScreenState extends State<HomeScreen> {
             bool isLoading,
             bool hasError,
             String? errorMessage,
-            String loadingStatus,
           })
         >(
           (p) => (
@@ -150,7 +152,6 @@ class _HomeScreenState extends State<HomeScreen> {
             isLoading: p.isLoading,
             hasError: p.hasError,
             errorMessage: p.errorMessage,
-            loadingStatus: p.loadingStatus,
           ),
         );
 
@@ -165,7 +166,7 @@ class _HomeScreenState extends State<HomeScreen> {
         Positioned.fill(
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 28),
-            child: vp.hasVideo
+            child: vp.hasVideo || vp.isLoading
                 ? Center(
                     child: ConstrainedBox(
                       constraints: const BoxConstraints(maxWidth: 1180),
@@ -215,12 +216,11 @@ class _HomeScreenState extends State<HomeScreen> {
       controller: _urlController,
       focusNode: _urlFocusNode,
       showPasteButton: true,
+      showFetchButton: !videoProvider.isLoading,
+      showLoadingProgress: false,
       onFetch: () => _handleFetch(videoProvider),
       onCancel: () => videoProvider.cancelFetch(),
       isLoading: videoProvider.isLoading,
-      statusMessage: videoProvider.loadingStatus.isEmpty
-          ? null
-          : videoProvider.loadingStatus,
       errorMessage: videoProvider.hasError ? videoProvider.errorMessage : null,
       maxWidth: 860,
     );
@@ -294,11 +294,6 @@ class _HomeScreenState extends State<HomeScreen> {
                 showPasteButton: true,
                 showFetchButton: false,
                 onFetch: () => _handleFetch(videoProvider),
-                onCancel: () => videoProvider.cancelFetch(),
-                isLoading: videoProvider.isLoading,
-                statusMessage: videoProvider.loadingStatus.isEmpty
-                    ? null
-                    : videoProvider.loadingStatus,
                 errorMessage: videoProvider.hasError
                     ? videoProvider.errorMessage
                     : null,
@@ -307,31 +302,20 @@ class _HomeScreenState extends State<HomeScreen> {
               final action = ValueListenableBuilder<TextEditingValue>(
                 valueListenable: _urlController,
                 builder: (context, value, _) => AeroButton(
-                  text: videoProvider.isLoading ? 'Cancel' : 'Choose format',
-                  icon: Icon(
-                    videoProvider.isLoading
-                        ? Symbols.close_rounded
-                        : Symbols.arrow_forward_rounded,
-                    size: 18,
-                  ),
+                  text: 'Choose format',
+                  icon: const Icon(Symbols.arrow_forward_rounded, size: 18),
                   height: 56,
                   expand: constraints.maxWidth < 650,
-                  tooltip: videoProvider.isLoading
-                      ? 'Cancel fetch'
-                      : 'Choose format (Enter)',
-                  variant: videoProvider.isLoading
-                      ? AeroButtonVariant.tonal
-                      : AeroButtonVariant.primary,
+                  tooltip: 'Choose format (Enter)',
+                  variant: AeroButtonVariant.primary,
                   // Empty submission simply focuses the input, keeping the next step visible.
-                  onPressed: videoProvider.isLoading
-                      ? () => videoProvider.cancelFetch()
-                      : () {
-                          if (value.text.trim().isEmpty) {
-                            _urlFocusNode.requestFocus();
-                          } else {
-                            _handleFetch(videoProvider);
-                          }
-                        },
+                  onPressed: () {
+                    if (value.text.trim().isEmpty) {
+                      _urlFocusNode.requestFocus();
+                    } else {
+                      _handleFetch(videoProvider);
+                    }
+                  },
                 ),
               );
               if (constraints.maxWidth >= 650) {

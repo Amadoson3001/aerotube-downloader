@@ -14,6 +14,7 @@ import '../../providers/platform_settings_provider.dart';
 import '../../providers/video_provider.dart';
 import '../components/components.dart';
 import 'video_configuration_controls.dart';
+import 'video_fetch_loading.dart';
 
 /// Two-pane Windows video configuration panel conforming to AeroTube design spec.
 ///
@@ -57,7 +58,7 @@ class _VideoConfigurationWidgetState extends State<VideoConfigurationWidget> {
     }
 
     if (videoProvider.isLoading) {
-      return _buildLoadingSkeleton(context, aero);
+      return _buildLoadingState(aero, videoProvider);
     }
 
     if (videoProvider.hasError) {
@@ -385,21 +386,19 @@ class _VideoConfigurationWidgetState extends State<VideoConfigurationWidget> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        AeroSegmentedControl(
+        DownloadModeControls(
           isAudio: provider.audioOnly,
-          onChanged: (isAudio) => provider.setAudioOnly(isAudio),
+          onChanged: provider.setAudioOnly,
+          qualityOptions: provider.audioOnly
+              ? AudioQualityConfigurationSection(
+                  provider: provider,
+                  sectionSpacing: AeroSpace.xl,
+                  headerSpacing: AeroSpace.md,
+                  emptyStreamsMessage:
+                      'No audio streams available for this quality tier.',
+                )
+              : _buildVideoQualitySection(context, aero, provider),
         ),
-        const SizedBox(height: AeroSpace.xl),
-        if (provider.audioOnly)
-          AudioQualityConfigurationSection(
-            provider: provider,
-            sectionSpacing: AeroSpace.xl,
-            headerSpacing: AeroSpace.md,
-            emptyStreamsMessage:
-                'No audio streams available for this quality tier.',
-          )
-        else
-          _buildVideoQualitySection(context, aero, provider),
         const SizedBox(height: AeroSpace.xl),
         _buildOptionsAccordion(context, aero, provider),
       ],
@@ -801,75 +800,35 @@ class _VideoConfigurationWidgetState extends State<VideoConfigurationWidget> {
   // Loading & Error States
   // ==========================================
 
-  Widget _buildLoadingSkeleton(BuildContext context, AeroColors aero) {
-    return AeroShimmerScope(
-      child: AeroCard(
-        borderRadius: AeroRadius.lgBorderRadius,
-        backgroundColor: aero.surface1,
-        borderColor: aero.outline,
-        padding: const EdgeInsets.all(AeroSpace.xxl),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            // Left skeleton
-            Expanded(
-              flex: 40,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const AspectRatio(
-                    aspectRatio: 16 / 9,
-                    child: ThumbnailTile(
-                      borderRadius: BorderRadius.all(Radius.circular(14)),
-                      fallback: AeroSkeletonBox(
-                        borderRadius: BorderRadius.all(Radius.circular(14)),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: AeroSpace.xl),
-                  const AeroSkeletonBox(height: 20, widthFactor: 0.85, phaseOffset: 0.08),
-                  const SizedBox(height: AeroSpace.md),
-                  const AeroSkeletonBox(height: 14, widthFactor: 0.5, phaseOffset: 0.16),
-                  const SizedBox(height: AeroSpace.md),
-                  const AeroSkeletonBox(height: 12, widthFactor: 0.7, phaseOffset: 0.24),
-                ],
-              ),
-            ),
-            Container(width: 1.0, color: aero.outline),
-            // Right skeleton
-            const Expanded(
-              flex: 60,
-              child: Padding(
-                padding: EdgeInsets.all(AeroSpace.xxl),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    AeroSkeletonBox(height: 38, widthFactor: 1.0, phaseOffset: 0.10),
-                    SizedBox(height: AeroSpace.xxl),
-                    AeroSkeletonBox(height: 16, widthFactor: 0.4, phaseOffset: 0.18),
-                    SizedBox(height: AeroSpace.md),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: AeroSkeletonBox(height: 48, widthFactor: 1.0, phaseOffset: 0.24),
-                        ),
-                        SizedBox(width: AeroSpace.sm),
-                        Expanded(
-                          child: AeroSkeletonBox(height: 48, widthFactor: 1.0, phaseOffset: 0.32),
-                        ),
-                        SizedBox(width: AeroSpace.sm),
-                        Expanded(
-                          child: AeroSkeletonBox(height: 48, widthFactor: 1.0, phaseOffset: 0.40),
-                        ),
-                      ],
-                    ),
-                    SizedBox(height: AeroSpace.xl),
-                    AeroSkeletonBox(height: 80, widthFactor: 1.0, phaseOffset: 0.48),
-                  ],
+  Widget _buildLoadingState(AeroColors aero, VideoProvider provider) {
+    return SingleChildScrollView(
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 560),
+          child: AeroCard(
+            hoverable: false,
+            backgroundColor: aero.surface1,
+            borderColor: aero.outline,
+            padding: const EdgeInsets.all(AeroSpace.xxl),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                VideoFetchLoading(
+                  status: provider.loadingStatus,
+                  video: provider.isPreviewOnly ? provider.videoInfo : null,
                 ),
-              ),
+                const SizedBox(height: AeroSpace.xl),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: AeroButton(
+                    variant: AeroButtonVariant.tonal,
+                    text: 'Cancel',
+                    onPressed: provider.cancelFetch,
+                  ),
+                ),
+              ],
             ),
-          ],
+          ),
         ),
       ),
     );

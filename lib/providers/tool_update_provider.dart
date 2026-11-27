@@ -169,7 +169,14 @@ class ToolUpdateProvider extends ChangeNotifier {
   Future<void> _checkAvailability() async {
     // Ensure the path to the managed binary has been resolved before probing.
     // initialize() is a no-op when already done, so this is cheap after boot.
-    await _ytdlpService.initialize();
+    try {
+      await _ytdlpService.initialize();
+    } catch (e) {
+      _logger.warning(
+        'Could not initialize yt-dlp: $e',
+        component: 'ToolUpdateProvider',
+      );
+    }
 
     // Check yt-dlp
     final ytdlpAvailable = await _ytdlpService.isAvailable();
@@ -349,12 +356,33 @@ class ToolUpdateProvider extends ChangeNotifier {
 
     _ffmpegState = _ffmpegState.copyWith(
       status: ToolUpdateStatus.checking,
-      statusMessage: 'Checking for updates...',
+      statusMessage: PlatformUtils.isAndroid
+          ? 'Checking bundled FFmpeg…'
+          : 'Checking for updates...',
       errorMessage: null,
     );
     notifyListeners();
 
     try {
+      if (PlatformUtils.isAndroid) {
+        await _ffmpegService.initialize(force: force);
+        final version = await _ffmpegService.getVersion();
+        final available = _ffmpegService.isAvailable;
+        _lastFfmpegCheck = DateTime.now();
+        _ffmpegState = ToolUpdateState(
+          tool: ToolType.ffmpeg,
+          status: available ? ToolUpdateStatus.upToDate : ToolUpdateStatus.error,
+          currentVersion: version,
+          statusMessage: available
+              ? 'Bundled with AeroTube'
+              : 'Bundled FFmpeg unavailable',
+          errorMessage: available
+              ? null
+              : 'AeroTube could not load bundled FFmpeg.',
+          isAvailable: available,
+        );
+        return;
+      }
       final updateInfo = await _ffmpegService.checkForUpdate();
       _lastFfmpegCheck = DateTime.now();
 
@@ -412,9 +440,9 @@ class ToolUpdateProvider extends ChangeNotifier {
           error: e,
         );
       }
+    } finally {
+      notifyListeners();
     }
-
-    notifyListeners();
   }
 
   /// Update yt-dlp to latest version
@@ -601,6 +629,10 @@ class ToolUpdateProvider extends ChangeNotifier {
   /// Install FFmpeg
   Future<bool> installFfmpeg() async {
     if (_ffmpegState.isBusy) return false;
+    if (PlatformUtils.isAndroid) {
+      await checkFfmpegForUpdate(force: true);
+      return _ffmpegState.isAvailable;
+    }
 
     _ffmpegCancelToken = false;
     _ffmpegState = _ffmpegState.copyWith(

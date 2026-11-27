@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:material_symbols_icons/symbols.dart';
 
+import '../../core/theme/app_motion.dart';
 import '../../core/theme/tokens/colors.dart';
 import '../../core/theme/tokens/radius.dart';
 import '../../core/theme/tokens/spacing.dart';
@@ -25,6 +26,59 @@ List<SubtitleTrack> sortSubtitlesByPreference(
     return aPref ? -1 : 1;
   });
   return copy;
+}
+
+class DownloadModeControls extends StatelessWidget {
+  final bool isAudio;
+  final ValueChanged<bool> onChanged;
+  final Widget qualityOptions;
+
+  const DownloadModeControls({
+    super.key,
+    required this.isAudio,
+    required this.onChanged,
+    required this.qualityOptions,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final duration = appMotionDuration(context, AppMotion.medium);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        AeroSegmentedControl(isAudio: isAudio, onChanged: onChanged),
+        const SizedBox(height: AeroSpace.xl),
+        if (duration == Duration.zero)
+          qualityOptions
+        else
+          AnimatedSize(
+            duration: duration,
+            curve: AppMotion.emphasized,
+            alignment: Alignment.topCenter,
+            child: AnimatedSwitcher(
+              duration: duration,
+              reverseDuration: Duration.zero,
+              switchInCurve: AppMotion.emphasized,
+              transitionBuilder: _fadeIn,
+              // Only the selected panel participates in layout and hit testing.
+              layoutBuilder: (current, _) => current ?? const SizedBox.shrink(),
+              child: KeyedSubtree(
+                key: ValueKey(isAudio),
+                child: qualityOptions,
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
+  static Widget _fadeIn(Widget child, Animation<double> animation) {
+    return FadeTransition(
+      opacity: animation.drive(Tween<double>(begin: 0.65, end: 1)),
+      child: child,
+    );
+  }
 }
 
 /// Shared codec variant chip selector for the active resolution.

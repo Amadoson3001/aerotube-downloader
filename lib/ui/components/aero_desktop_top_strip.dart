@@ -37,9 +37,11 @@ class AeroDesktopTopStrip extends StatelessWidget {
     final sp = context.watch<PlatformSettingsProvider>();
     final nav = context.read<NavigationProvider>();
 
+    final isNarrow = MediaQuery.sizeOf(context).width < 600;
+
     return Container(
       height: 56,
-      padding: const EdgeInsets.symmetric(horizontal: 24),
+      padding: EdgeInsets.symmetric(horizontal: isNarrow ? 16 : 24),
       decoration: BoxDecoration(
         color: colors.bg,
         border: Border(bottom: BorderSide(color: colors.outline, width: 1)),
@@ -48,39 +50,45 @@ class AeroDesktopTopStrip extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
           // Breadcrumb / Page Title on left
-          Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                'AeroTube',
-                style: AeroText.caption.copyWith(
-                  color: colors.onSurfaceFaint,
-                  fontWeight: FontWeight.w600,
-                  fontSize: 12,
-                ),
-              ),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 6),
-                child: Text(
-                  '/',
+          Expanded(
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  'AeroTube',
                   style: AeroText.caption.copyWith(
                     color: colors.onSurfaceFaint,
+                    fontWeight: FontWeight.w600,
                     fontSize: 12,
                   ),
                 ),
-              ),
-              Text(
-                _getPageTitle(),
-                style: AeroText.caption.copyWith(
-                  color: colors.onSurface,
-                  fontWeight: FontWeight.w700,
-                  fontSize: 12,
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 6),
+                  child: Text(
+                    '/',
+                    style: AeroText.caption.copyWith(
+                      color: colors.onSurfaceFaint,
+                      fontSize: 12,
+                    ),
+                  ),
                 ),
-              ),
-            ],
+                Flexible(
+                  child: Text(
+                    _getPageTitle(),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: AeroText.caption.copyWith(
+                      color: colors.onSurface,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 12,
+                    ),
+                  ),
+                ),
+              ],
+            ),
           ),
 
-          const Spacer(),
+          const SizedBox(width: 12),
           _buildReadiness(context, sp, nav),
         ],
       ),

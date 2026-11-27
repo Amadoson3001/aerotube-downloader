@@ -435,9 +435,6 @@ class _MobileResultScreenState extends State<MobileResultScreen> {
           ? MobileVideoConfigurationWidget(
               onDownload: _startDownload,
               onClear: () {
-                if (videoProvider.isLoading) {
-                  videoProvider.cancelFetch();
-                }
                 videoProvider.clear();
                 Navigator.pop(context);
               },

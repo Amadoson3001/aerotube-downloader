@@ -207,18 +207,30 @@ class VideoProvider extends ChangeNotifier {
     _fetchGen++; // invalidate any in-flight future
     _isLoading = false;
     _loadingStatus = '';
+    if (_isPreviewOnly) {
+      _videoInfo = null;
+      _isPreviewOnly = false;
+    }
     _appendFetchLog('Cancelled by user');
+    final cancellation = _cancelServiceFetch();
+    notifyListeners();
+    await cancellation;
+    LoggingService().info(
+      'Video fetch cancelled by user',
+      component: 'VideoProvider',
+    );
+  }
+
+  Future<void> _cancelServiceFetch() async {
     try {
-      // ignore: avoid_dynamic_calls
       await _ytdlpService.cancelFetch();
     } catch (_) {}
-    try {
-      // Also attempt to cancel via service-specific channel if available
-      LoggingService().info(
-        'Video fetch cancelled by user',
-        component: 'VideoProvider',
-      );
-    } catch (_) {}
+  }
+
+  void _setLoadingStatus(String status) {
+    if (status == _loadingStatus) return;
+    _loadingStatus = status;
+    _appendFetchLog(status);
     notifyListeners();
   }
 
@@ -233,7 +245,7 @@ class VideoProvider extends ChangeNotifier {
   }
 
   /// Seamless auto-update of yt-dlp with live progress reporting.
-  Future<bool> _autoUpdateYtdlp() async {
+  Future<bool> _autoUpdateYtdlp(int generation) async {
     try {
       _loadingStatus = 'Updating yt-dlp to latest version...';
       _appendFetchLog('Auto-updating yt-dlp to latest release...');
@@ -246,17 +258,20 @@ class VideoProvider extends ChangeNotifier {
       final success = await _ytdlpService.downloadAndInstallUpdate(
         downloadUrl,
         onProgress: (p) {
+          if (generation != _fetchGen || _isDisposed) return;
           final percent = (p * 100).clamp(0, 100).toInt();
-          _loadingStatus = 'Updating yt-dlp $percent%...';
+          final status = 'Updating yt-dlp $percent%...';
+          if (status == _loadingStatus) return;
+          _loadingStatus = status;
           notifyListeners();
         },
         onStatus: (status) {
-          _loadingStatus = status;
-          _appendFetchLog(status);
-          notifyListeners();
+          if (generation != _fetchGen || _isDisposed) return;
+          _setLoadingStatus(status);
         },
       );
 
+      if (generation != _fetchGen || _isDisposed) return false;
       if (success) {
         _appendFetchLog('yt-dlp update completed successfully');
         _requiresYtdlpUpdate = false;
@@ -264,6 +279,7 @@ class VideoProvider extends ChangeNotifier {
       }
       return false;
     } catch (e) {
+      if (generation != _fetchGen || _isDisposed) return false;
       _appendFetchLog('Auto-update error: $e');
       LoggingService().warning(
         'VideoProvider autoUpdateYtdlp failed: $e',
@@ -275,18 +291,21 @@ class VideoProvider extends ChangeNotifier {
 
   /// Public method allowing UI to trigger an update and immediately retry the current URL.
   Future<void> updateYtdlpAndRetry() async {
-    if (_currentUrl.isEmpty) return;
+    if (_currentUrl.isEmpty || _isLoading) return;
+    final myGen = ++_fetchGen;
     final url = _currentUrl;
     _isLoading = true;
     _errorMessage = null;
     _loadingStatus = 'Updating yt-dlp...';
     notifyListeners();
 
-    final updated = await _autoUpdateYtdlp();
+    final updated = await _autoUpdateYtdlp(myGen);
+    if (myGen != _fetchGen || _isDisposed) return;
     if (updated) {
       await fetchVideoInfo(url, isRetryAfterUpdate: true);
     } else {
       _isLoading = false;
+      _loadingStatus = '';
       _errorMessage =
           'Could not update yt-dlp automatically. Please check your internet connection.';
       notifyListeners();
@@ -324,28 +343,13 @@ class VideoProvider extends ChangeNotifier {
     _selectedSubtitles.clear();
 
     final hasFullCache = _ytdlpService.hasCachedVideoInfo(url);
-    if (!hasFullCache && previewHint != null) {
-      _videoInfo = VideoInfo(
-        id: previewHint.id,
-        title: previewHint.title,
-        channel: previewHint.author,
-        channelUrl: '',
-        thumbnailUrl: previewHint.thumbnailUrl,
-        duration: previewHint.duration?.inSeconds ?? 0,
-        description: '',
-        viewCount: previewHint.viewCount ?? 0,
-        uploadDate: previewHint.uploadDate ?? '',
-        formats: const [],
-        url: url,
-        subtitles: const [],
-      );
-      _isPreviewOnly = true;
-      _loadingStatus = 'Loading stream formats...';
-    } else {
-      _isPreviewOnly = false;
-      _videoInfo = null;
-      _loadingStatus = 'Initializing...';
-    }
+    _isPreviewOnly = !hasFullCache && previewHint != null;
+    _videoInfo = _isPreviewOnly ? _previewVideoInfo(previewHint!, url) : null;
+    _loadingStatus = hasFullCache
+        ? 'Loading saved video details…'
+        : _isPreviewOnly
+        ? 'Preparing to check available formats…'
+        : 'Getting video details…';
     if (!isRetryAfterUpdate) {
       _resetFetchLogs();
     }
@@ -357,7 +361,11 @@ class VideoProvider extends ChangeNotifier {
       );
     }
     notifyListeners();
-    _lastStatusNotify = DateTime.now();
+
+    // Preview metadata does not depend on yt-dlp being ready.
+    if (!hasFullCache && previewHint == null && UrlValidator.isYouTubeUrl(url)) {
+      unawaited(_fetchFastPreview(url, myGen));
+    }
 
     // Pre-flight check: ensure yt-dlp is available before attempting fetch
     try {
@@ -371,13 +379,16 @@ class VideoProvider extends ChangeNotifier {
         _loadingStatus = 'Setting up yt-dlp automatically...';
         _appendFetchLog('yt-dlp missing locally. Auto-installing...');
         notifyListeners();
-        final installed = await _autoUpdateYtdlp();
+        final installed = await _autoUpdateYtdlp(myGen);
         if (myGen != _fetchGen || _isDisposed) return;
         if (!installed) {
           _errorMessage =
               'Could not set up yt-dlp automatically. Please check your internet connection.';
           _requiresYtdlpUpdate = true;
           _isLoading = false;
+          _loadingStatus = '';
+          _videoInfo = null;
+          _isPreviewOnly = false;
           notifyListeners();
           return;
         }
@@ -385,11 +396,11 @@ class VideoProvider extends ChangeNotifier {
     } catch (_) {}
 
     if (myGen != _fetchGen || _isDisposed) return;
-    if (!hasFullCache && previewHint == null && UrlValidator.isYouTubeUrl(url)) {
-      unawaited(_fetchFastPreview(url, myGen));
-    }
     try {
       FetchPriority.beginInteractive();
+      if (!hasFullCache) {
+        _setLoadingStatus('Checking available download formats…');
+      }
       LoggingService().debug(
         'Calling _ytdlpService.getVideoInfo',
         component: 'VideoProvider',
@@ -400,8 +411,8 @@ class VideoProvider extends ChangeNotifier {
       final future = _ytdlpService.getVideoInfo(
         url,
         onProgress: (status) {
-          if (myGen != _fetchGen) return; // cancelled
-          _throttledStatusUpdate(status);
+          if (myGen != _fetchGen || _isDisposed) return;
+          _setLoadingStatus(status);
         },
       );
       late final VideoInfo fetchedInfo;
@@ -437,9 +448,7 @@ class VideoProvider extends ChangeNotifier {
       _playlistInfo = null;
 
       if (_videoInfo != null) {
-        _loadingStatus = 'Processing formats...';
-        _appendFetchLog('Processing formats...');
-        notifyListeners();
+        _setLoadingStatus('Organizing download formats…');
         _processFormats();
         _appendFetchLog(
           'Found ${_videoInfo!.formats.length} available stream formats',
@@ -476,14 +485,19 @@ class VideoProvider extends ChangeNotifier {
         _loadingStatus = 'Updating yt-dlp to latest version...';
         notifyListeners();
 
-        final updateSuccess = await _autoUpdateYtdlp();
-        if (updateSuccess && myGen == _fetchGen) {
+        final updateSuccess = await _autoUpdateYtdlp(myGen);
+        if (myGen != _fetchGen || _isDisposed) return;
+        if (updateSuccess) {
           _appendFetchLog(
             'yt-dlp updated successfully! Retrying video fetch...',
           );
           _loadingStatus = 'Retrying video fetch...';
           notifyListeners();
-          return fetchVideoInfo(url, isRetryAfterUpdate: true);
+          return fetchVideoInfo(
+            url,
+            isRetryAfterUpdate: true,
+            previewHint: previewHint,
+          );
         }
       }
 
@@ -515,7 +529,14 @@ class VideoProvider extends ChangeNotifier {
         _isDisposed) {
       return;
     }
-    _videoInfo = VideoInfo(
+    _videoInfo = _previewVideoInfo(preview, url);
+    _isPreviewOnly = true;
+    _appendFetchLog('Loaded video preview');
+    notifyListeners();
+  }
+
+  VideoInfo _previewVideoInfo(SearchVideoResult preview, String url) {
+    return VideoInfo(
       id: preview.id,
       title: preview.title,
       channel: preview.author,
@@ -529,10 +550,6 @@ class VideoProvider extends ChangeNotifier {
       url: url,
       subtitles: const [],
     );
-    _isPreviewOnly = true;
-    _loadingStatus = 'Loading stream formats...';
-    _appendFetchLog('Loaded instant preview while fetching stream formats');
-    notifyListeners();
   }
 
   /// The Core Logic: Separate streams, group by resolution, find best bitrate
@@ -801,6 +818,11 @@ class VideoProvider extends ChangeNotifier {
     _technicalError = null;
     _requiresYtdlpUpdate = false;
     _currentUrl = url;
+    if (_isPreviewOnly) {
+      _videoInfo = null;
+      _isPreviewOnly = false;
+    }
+    _loadingStatus = 'Getting playlist details…';
     if (!isRetryAfterUpdate) {
       _resetFetchLogs();
     }
@@ -823,13 +845,14 @@ class VideoProvider extends ChangeNotifier {
         _loadingStatus = 'Setting up yt-dlp automatically...';
         _appendFetchLog('yt-dlp missing locally. Auto-installing...');
         notifyListeners();
-        final installed = await _autoUpdateYtdlp();
+        final installed = await _autoUpdateYtdlp(myGen);
         if (myGen != _fetchGen || _isDisposed) return;
         if (!installed) {
           _errorMessage =
               'Could not set up yt-dlp automatically. Please check your internet connection.';
           _requiresYtdlpUpdate = true;
           _isLoading = false;
+          _loadingStatus = '';
           notifyListeners();
           return;
         }
@@ -893,8 +916,9 @@ class VideoProvider extends ChangeNotifier {
         _loadingStatus = 'Updating yt-dlp to latest version...';
         notifyListeners();
 
-        final updateSuccess = await _autoUpdateYtdlp();
-        if (updateSuccess && myGen == _fetchGen) {
+        final updateSuccess = await _autoUpdateYtdlp(myGen);
+        if (myGen != _fetchGen || _isDisposed) return;
+        if (updateSuccess) {
           _appendFetchLog(
             'yt-dlp updated successfully! Retrying playlist fetch...',
           );
@@ -923,10 +947,7 @@ class VideoProvider extends ChangeNotifier {
     // H10: bump generation and cancel in-flight fetch so a completing
     // future cannot repopulate state after the user cleared the screen.
     _fetchGen++;
-    try {
-      // ignore: avoid_dynamic_calls
-      _ytdlpService.cancelFetch();
-    } catch (_) {}
+    unawaited(_cancelServiceFetch());
     _isLoading = false;
     _videoInfo = null;
     _playlistInfo = null;
@@ -980,6 +1001,7 @@ class VideoProvider extends ChangeNotifier {
   }
 
   void setAudioOnly(bool value) {
+    if (value == _audioOnly) return;
     _audioOnly = value;
     notifyListeners();
   }

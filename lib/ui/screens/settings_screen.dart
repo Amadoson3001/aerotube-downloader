@@ -875,6 +875,7 @@ class _SettingsScreenState extends State<SettingsScreen>
     required VoidCallback onInstall,
     required VoidCallback onAdvanced,
   }) {
+    final bundled = state.tool == ToolType.ffmpeg && PlatformUtils.isAndroid;
     String subtitle;
     StatusPill pill;
 
@@ -899,6 +900,12 @@ class _SettingsScreenState extends State<SettingsScreen>
           );
         },
       );
+    } else if (bundled && state.isAvailable) {
+      subtitle = 'Bundled with AeroTube';
+      pill = const StatusPill(label: 'Ready', type: StatusPillType.success);
+    } else if (bundled) {
+      subtitle = 'Bundled FFmpeg availability pending';
+      pill = const StatusPill(label: 'Pending', type: StatusPillType.info);
     } else if (state.hasUpdate) {
       subtitle = PlatformUtils.isMobile
           ? 'v${state.latestVersion} available'
@@ -959,7 +966,13 @@ class _SettingsScreenState extends State<SettingsScreen>
             pill,
             const SizedBox(width: AeroSpace.sm),
             actionButton,
-          ] else
+          ] else if (bundled)
+            IconButton.filledTonal(
+              tooltip: 'Check FFmpeg availability',
+              onPressed: state.isBusy ? null : onCheckUpdate,
+              icon: const Icon(Symbols.refresh_rounded, size: 20),
+            )
+          else
             IconButton.filledTonal(
               tooltip: state.isBusy
                   ? 'Cancel $toolName update'

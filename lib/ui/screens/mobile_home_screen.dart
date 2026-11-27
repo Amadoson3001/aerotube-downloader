@@ -33,6 +33,7 @@ class MobileHomeScreen extends StatefulWidget {
 class _MobileHomeScreenState extends State<MobileHomeScreen> {
   final _urlController = TextEditingController();
   VideoProvider? _videoProvider;
+  String _lastFetchUrl = '';
 
   bool _isShowingAuthDialog = false;
   bool _isFetchNavigating = false;
@@ -59,9 +60,12 @@ class _MobileHomeScreenState extends State<MobileHomeScreen> {
   void _onVideoProviderChange() {
     if (!mounted || _videoProvider == null) return;
 
-    if (_urlController.text != _videoProvider!.currentUrl &&
-        _videoProvider!.currentUrl.isNotEmpty) {
-      _urlController.text = _videoProvider!.currentUrl;
+    final url = _videoProvider!.currentUrl;
+    if (url != _lastFetchUrl) {
+      _lastFetchUrl = url;
+      if (url.isNotEmpty && _urlController.text != url) {
+        _urlController.text = url;
+      }
     }
 
     // C7: never force-unwrap errorMessage. H23: only re-show the auth dialog

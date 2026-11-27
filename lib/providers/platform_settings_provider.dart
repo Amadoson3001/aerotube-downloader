@@ -918,8 +918,9 @@ class PlatformSettingsProvider extends ChangeNotifier {
   }
 
   Future<void> setSidebarExpanded(bool value) async {
-    await _settingsService.setSidebarExpanded(value);
+    final future = _settingsService.setSidebarExpanded(value);
     notifyListeners();
+    await future;
   }
 
   Future<void> setYtdlpAutoUpdated(bool value) async {

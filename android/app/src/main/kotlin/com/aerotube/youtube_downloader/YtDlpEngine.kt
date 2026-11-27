@@ -83,9 +83,9 @@ object YtDlpEngine {
      * start doesn't silently disable embedding for the whole session.
      */
     @Synchronized
-    fun ensureFfmpeg(): Boolean {
+    fun ensureFfmpeg(context: Context? = appContext): Boolean {
         if (ffmpegReady) return true
-        val ctx = appContext ?: return false
+        val ctx = context?.applicationContext ?: return false
         ffmpegReady = try {
             FFmpeg.getInstance().init(ctx)
             Log.d(TAG, "FFmpeg initialized successfully")
@@ -103,11 +103,11 @@ object YtDlpEngine {
      * the AAR does not expose one, and a fake "6.x" string is worse than null.
      * Returns the youtubedl-android library build tag when payload is present.
      */
-    fun ffmpegVersion(): String? {
+    fun ffmpegVersion(context: Context): String? {
         return try {
-            val ctx = appContext ?: return null
+            val ctx = context.applicationContext
             // ensureFfmpeg is the availability gate: init must not have thrown.
-            if (!ensureFfmpeg()) return null
+            if (!ensureFfmpeg(ctx)) return null
             if (!hasFfmpegPayload(ctx)) {
                 Log.w(TAG, "FFmpeg init reported ready but payload dir is empty/missing")
                 return null
@@ -139,7 +139,16 @@ object YtDlpEngine {
     fun getVersion(context: Context): String? {
         return try {
             ensureYoutubeDL(context)
-            YoutubeDL.getInstance().version(context.applicationContext)
+            val youtubeDL = YoutubeDL.getInstance()
+            val recordedVersion = youtubeDL.version(context.applicationContext)
+            if (!recordedVersion.isNullOrBlank()) return recordedVersion
+
+            // The library records a version only after an update. The bundled
+            // copy on a fresh install can report its version directly.
+            val request = YoutubeDLRequest(emptyList<String>()).apply {
+                addOption("--version")
+            }
+            youtubeDL.execute(request).out.trim().takeIf { it.isNotEmpty() }
         } catch (e: Throwable) {
             Log.e(TAG, "Failed to get version", e)
             null

@@ -61,6 +61,9 @@ class UrlComposer extends StatefulWidget {
   /// Whether a fetch operation is currently active.
   final bool isLoading;
 
+  /// Whether to show the inline progress track while loading.
+  final bool showLoadingProgress;
+
   /// Error message to display inline below the field.
   final String? errorMessage;
 
@@ -99,6 +102,7 @@ class UrlComposer extends StatefulWidget {
     this.onCancel,
     this.onChanged,
     this.isLoading = false,
+    this.showLoadingProgress = true,
     this.errorMessage,
     this.statusMessage,
     this.hintText,
@@ -403,7 +407,8 @@ class _UrlComposerState extends State<UrlComposer> {
             ),
 
             // Inline progress line along the bottom edge
-            if (currentState == UrlComposerState.loading)
+            if (currentState == UrlComposerState.loading &&
+                widget.showLoadingProgress)
               const Positioned(
                 left: 0,
                 right: 0,
@@ -411,6 +416,7 @@ class _UrlComposerState extends State<UrlComposer> {
                 child: AeroProgress(
                   height: 3.0,
                   backgroundColor: Colors.transparent,
+                  semanticsLabel: 'Looking up download options',
                 ),
               ),
           ],

@@ -304,15 +304,14 @@ class YtdlpServiceAndroid implements YtdlpToolService {
   }) async {
     StreamSubscription<Map<String, dynamic>>? progressSubscription;
     try {
-      onStatus('Preparing yt-dlp...');
-      await initialize();
-
       if (isCancelled?.call() == true) {
         onStatus('Cancelled');
         return false;
       }
 
-      onStatus('Updating yt-dlp via native library...');
+      // The native updater initializes the bundled runtime. It can be called
+      // even when Dart could not get an installed version.
+      onStatus('Updating yt-dlp…');
 
       progressSubscription = NativeYtdlpAndroid.downloadEvents.listen((event) {
         if (event['event'] == 'progress') {
@@ -412,11 +411,11 @@ class YtdlpServiceAndroid implements YtdlpToolService {
         'Joining in-flight video info request for: $url',
         component: 'YtdlpServiceAndroid',
       );
-      onProgress?.call('Fetching video information...');
+      onProgress?.call('Finding video details and available formats...');
       return existingInFlight;
     }
 
-    onProgress?.call('Fetching video information...');
+    onProgress?.call('Finding video details and available formats...');
 
     _logger.info(
       'Getting video info for: $url',

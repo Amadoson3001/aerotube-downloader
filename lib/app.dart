@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:material_symbols_icons/symbols.dart';
 import 'package:provider/provider.dart';
 import 'core/theme/app_theme.dart';
 import 'core/theme/app_motion.dart';
+import 'core/theme/tokens/colors.dart';
+import 'providers/download_provider.dart';
 import 'providers/platform_settings_provider.dart';
 import 'providers/navigation_provider.dart';
 import 'services/notification/notification_service.dart';
@@ -110,6 +113,13 @@ class _AppState extends State<App> with TickerProviderStateMixin {
               ? AppTheme.amoledDarkTheme
               : AppTheme.darkTheme,
       themeMode: themeMode,
+      // Flutter 3.47's Windows AccessibilityBridge (ui::AXTree) crashes with
+      // 0xc0000005 on dynamic tree mutations (sidebar collapse, tool-check
+      // overlays). ExcludeSemantics keeps the Windows AXTree empty and stable.
+      builder: PlatformUtils.isWindows
+          ? (context, child) =>
+                ExcludeSemantics(child: child ?? const SizedBox.shrink())
+          : null,
       routes: {'/youtube_login': (context) => const YoutubeLoginScreen()},
       home: needsOnboarding
           ? OnboardingScreen(
@@ -152,6 +162,8 @@ class _AppState extends State<App> with TickerProviderStateMixin {
                     ],
                   );
                 }
+                final isCompactDesktop =
+                    MediaQuery.sizeOf(context).width < 600;
                 return Stack(
                   children: [
                     CallbackShortcuts(
@@ -192,6 +204,16 @@ class _AppState extends State<App> with TickerProviderStateMixin {
                         ): () {
                           context.read<NavigationProvider>().switchToSettings();
                         },
+                        const SingleActivator(
+                          LogicalKeyboardKey.keyB,
+                          control: true,
+                        ): () {
+                          final sp = context.read<PlatformSettingsProvider>();
+                          if (MediaQuery.sizeOf(context).width >=
+                              AppNavigationRail.wideWindowBreakpoint) {
+                            sp.setSidebarExpanded(!sp.isSidebarExpanded);
+                          }
+                        },
                       },
                       child: Focus(
                         autofocus: true,
@@ -199,43 +221,50 @@ class _AppState extends State<App> with TickerProviderStateMixin {
                           backgroundColor: Theme.of(
                             context,
                           ).scaffoldBackgroundColor,
+                          bottomNavigationBar: isCompactDesktop
+                              ? const _CompactDesktopBottomBar()
+                              : null,
                           body: Row(
                             children: [
-                              AppNavigationRail(
-                                entranceController: _entranceController,
-                              ),
+                              if (!isCompactDesktop)
+                                AppNavigationRail(
+                                  entranceController: _entranceController,
+                                ),
                               Expanded(
-                                child: Selector<NavigationProvider, int>(
-                                  selector: (_, p) => p.currentIndex,
-                                  builder: (context, currentIndex, _) {
-                                    return Column(
-                                      children: [
-                                        // 48 px transparent top strip with breadcrumb and StatusPills
-                                        AeroDesktopTopStrip(
-                                          currentIndex: currentIndex,
-                                        ),
-                                        Expanded(
-                                          child: Center(
-                                            child: ConstrainedBox(
-                                              constraints: const BoxConstraints(
-                                                maxWidth: 1100,
-                                              ),
-                                              child: _SmoothIndexedStack(
-                                                index: currentIndex,
-                                                duration: appMotionDuration(
-                                                  context,
-                                                  AppMotion.fast,
+                                child: RepaintBoundary(
+                                  child: Selector<NavigationProvider, int>(
+                                    selector: (_, p) => p.currentIndex,
+                                    builder: (context, currentIndex, _) {
+                                      return Column(
+                                        children: [
+                                          // 56 px top strip with breadcrumb and readiness pill
+                                          AeroDesktopTopStrip(
+                                            currentIndex: currentIndex,
+                                          ),
+                                          Expanded(
+                                            child: Center(
+                                              child: ConstrainedBox(
+                                                constraints:
+                                                    const BoxConstraints(
+                                                      maxWidth: 1100,
+                                                    ),
+                                                child: _SmoothIndexedStack(
+                                                  index: currentIndex,
+                                                  duration: appMotionDuration(
+                                                    context,
+                                                    AppMotion.fast,
+                                                  ),
+                                                  children: _screens,
                                                 ),
-                                                children: _screens,
                                               ),
                                             ),
                                           ),
-                                        ),
-                                        // Mini download tray docked at bottom of content
-                                        const MiniDownloadTray(),
-                                      ],
-                                    );
-                                  },
+                                          // Mini download tray docked at bottom of content
+                                          const MiniDownloadTray(),
+                                        ],
+                                      );
+                                    },
+                                  ),
                                 ),
                               ),
                             ],
@@ -336,6 +365,68 @@ class _SmoothIndexedStackState extends State<_SmoothIndexedStack>
     return FadeTransition(
       opacity: _opacity,
       child: stack,
+    );
+  }
+}
+
+/// Bottom navigation bar shown on desktop when the window is narrower than
+/// 600 px so the full width remains available for content.
+class _CompactDesktopBottomBar extends StatelessWidget {
+  const _CompactDesktopBottomBar();
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.aero;
+    final currentIndex = context.select<NavigationProvider, int>(
+      (p) => p.currentIndex,
+    );
+    final activeCount = context.select<DownloadProvider, int>(
+      (p) => p.activeCount,
+    );
+
+    return Container(
+      decoration: BoxDecoration(
+        color: colors.surface1,
+        border: Border(top: BorderSide(color: colors.outline)),
+      ),
+      child: NavigationBar(
+        height: 62,
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        selectedIndex: currentIndex,
+        onDestinationSelected: (i) =>
+            context.read<NavigationProvider>().setIndex(i),
+        destinations: [
+          const NavigationDestination(
+            icon: Icon(Symbols.home_rounded),
+            selectedIcon: Icon(Symbols.home_rounded, fill: 1),
+            label: 'Home',
+          ),
+          const NavigationDestination(
+            icon: Icon(Symbols.search_rounded),
+            selectedIcon: Icon(Symbols.search_rounded, fill: 1),
+            label: 'Search',
+          ),
+          NavigationDestination(
+            icon: Badge(
+              isLabelVisible: activeCount > 0,
+              label: Text(activeCount > 99 ? '99+' : '$activeCount'),
+              child: const Icon(Symbols.download_rounded),
+            ),
+            selectedIcon: Badge(
+              isLabelVisible: activeCount > 0,
+              label: Text(activeCount > 99 ? '99+' : '$activeCount'),
+              child: const Icon(Symbols.download_rounded, fill: 1),
+            ),
+            label: 'Library',
+          ),
+          const NavigationDestination(
+            icon: Icon(Symbols.settings_rounded),
+            selectedIcon: Icon(Symbols.settings_rounded, fill: 1),
+            label: 'Settings',
+          ),
+        ],
+      ),
     );
   }
 }

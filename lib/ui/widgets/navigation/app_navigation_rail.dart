@@ -1,6 +1,5 @@
-import 'package:material_symbols_icons/symbols.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_animate/flutter_animate.dart';
+import 'package:material_symbols_icons/symbols.dart';
 import 'package:provider/provider.dart';
 
 import '../../../core/theme/app_motion.dart';
@@ -27,11 +26,27 @@ class _DesktopNavItemConfig {
   });
 }
 
-/// One persistent desktop sidebar. All geometry uses the same expansion value.
-class AppNavigationRail extends StatelessWidget {
+/// One persistent desktop sidebar. All geometry uses a single smooth
+/// [AnimationController] so collapse, expand, and responsive width changes
+/// animate continuously without rebuilding static subtrees.
+class AppNavigationRail extends StatefulWidget {
   final AnimationController entranceController;
+
   const AppNavigationRail({super.key, required this.entranceController});
 
+  /// Minimum window width where the sidebar can be expanded.
+  /// Below this width it auto-collapses to the 72 px icon rail.
+  static const double wideWindowBreakpoint = 840.0;
+  static const double collapsedWidth = 72.0;
+  static const double expandedWidth = 232.0;
+  static const Duration _toggleDuration = Duration(milliseconds: 240);
+
+  @override
+  State<AppNavigationRail> createState() => _AppNavigationRailState();
+}
+
+class _AppNavigationRailState extends State<AppNavigationRail>
+    with SingleTickerProviderStateMixin {
   static const _navItems = [
     _DesktopNavItemConfig(
       iconOutlined: Symbols.home_rounded,
@@ -60,12 +75,94 @@ class AppNavigationRail extends StatelessWidget {
     ),
   ];
 
+  late final AnimationController _controller;
+  late final Animation<double> _widthCurve;
+  late final Animation<double> _detailsOpacity;
+  late final Animation<double> _entranceFade;
+  late final Animation<Offset> _entranceSlide;
+
+  bool _initialized = false;
+  bool _isExpanded = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: AppNavigationRail._toggleDuration,
+      value: 1.0,
+    );
+    _widthCurve = CurvedAnimation(
+      parent: _controller,
+      curve: Curves.easeInOutCubic,
+    );
+    _detailsOpacity = CurvedAnimation(
+      parent: _controller,
+      curve: const Interval(0.15, 1.0, curve: Curves.easeOut),
+    );
+    _entranceFade = CurvedAnimation(
+      parent: widget.entranceController,
+      curve: AppMotion.decelerate,
+    );
+    _entranceSlide = Tween<Offset>(
+      begin: const Offset(-0.06, 0),
+      end: Offset.zero,
+    ).animate(
+      CurvedAnimation(
+        parent: widget.entranceController,
+        curve: AppMotion.decelerate,
+      ),
+    );
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final settings = context.watch<PlatformSettingsProvider>();
+    final wideWindow =
+        MediaQuery.sizeOf(context).width >=
+        AppNavigationRail.wideWindowBreakpoint;
+    final targetExpanded = settings.isSidebarExpanded && wideWindow;
+
+    if (!_initialized) {
+      _initialized = true;
+      _isExpanded = targetExpanded;
+      _controller.value = targetExpanded ? 1.0 : 0.0;
+      return;
+    }
+
+    if (targetExpanded != _isExpanded) {
+      _isExpanded = targetExpanded;
+      final duration = readAppMotionDuration(
+        context,
+        AppNavigationRail._toggleDuration,
+      );
+      if (duration == Duration.zero) {
+        _controller.value = targetExpanded ? 1.0 : 0.0;
+      } else {
+        _controller.animateTo(
+          targetExpanded ? 1.0 : 0.0,
+          duration: duration,
+          curve: Curves.linear,
+        );
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     final colors = context.aero;
     final settings = context.watch<PlatformSettingsProvider>();
-    final wideWindow = MediaQuery.sizeOf(context).width >= 1000;
-    final isExpanded = settings.isSidebarExpanded && wideWindow;
+    final wideWindow =
+        MediaQuery.sizeOf(context).width >=
+        AppNavigationRail.wideWindowBreakpoint;
+    final isExpanded = _isExpanded;
     final nav = context.watch<NavigationProvider>();
     final activeCount = context.select<DownloadProvider, int>(
       (p) => p.activeCount,
@@ -80,15 +177,88 @@ class AppNavigationRail extends StatelessWidget {
         ? colors.info
         : colors.onSurfaceFaint;
 
-    return TweenAnimationBuilder<double>(
-          tween: Tween<double>(
-            begin: isExpanded ? 1 : 0,
-            end: isExpanded ? 1 : 0,
+    final logoBox = Container(
+      width: 32,
+      height: 32,
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [
+            colors.primary,
+            colors.primary.withValues(alpha: 0.75),
+          ],
+        ),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: const Icon(
+        Symbols.play_arrow_rounded,
+        size: 20,
+        color: Colors.white,
+      ),
+    );
+
+    final headerDetails = Row(
+      children: [
+        const SizedBox(width: 10),
+        Expanded(
+          child: RichText(
+            text: TextSpan(
+              children: [
+                TextSpan(
+                  text: 'Aero',
+                  style: TextStyle(
+                    fontFamily: 'Manrope',
+                    fontSize: 18,
+                    fontWeight: FontWeight.w800,
+                    color: colors.onSurface,
+                    letterSpacing: -0.4,
+                  ),
+                ),
+                TextSpan(
+                  text: 'Tube',
+                  style: TextStyle(
+                    fontFamily: 'Manrope',
+                    fontSize: 18,
+                    fontWeight: FontWeight.w400,
+                    color: colors.primary,
+                    letterSpacing: -0.4,
+                  ),
+                ),
+              ],
+            ),
           ),
-          duration: appMotionDuration(context, AppMotion.medium),
-          curve: AppMotion.emphasized,
-          builder: (context, expansion, _) => Container(
-            width: 72 + 160 * expansion,
+        ),
+        Icon(
+          Symbols.menu_open_rounded,
+          size: 18,
+          color: colors.onSurfaceMuted,
+        ),
+      ],
+    );
+
+    final workspaceLabel = Padding(
+      padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
+      child: Text(
+        'WORKSPACE',
+        style: AeroText.caption.copyWith(
+          fontSize: 10,
+          fontWeight: FontWeight.w700,
+          color: colors.onSurfaceFaint,
+          letterSpacing: 1.2,
+        ),
+      ),
+    );
+
+    final rail = RepaintBoundary(
+      child: AnimatedBuilder(
+        animation: _widthCurve,
+        builder: (context, _) {
+          final expansion = _widthCurve.value.clamp(0.0, 1.0);
+          return Container(
+            width:
+                AppNavigationRail.collapsedWidth +
+                (AppNavigationRail.expandedWidth -
+                        AppNavigationRail.collapsedWidth) *
+                    expansion,
             clipBehavior: Clip.hardEdge,
             decoration: BoxDecoration(
               color: colors.surface1,
@@ -97,7 +267,6 @@ class AppNavigationRail extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                // The same header button, logo and wordmark stay mounted in both states.
                 Tooltip(
                   message: wideWindow
                       ? (isExpanded ? 'Collapse sidebar' : 'Expand sidebar')
@@ -111,7 +280,7 @@ class AppNavigationRail extends StatelessWidget {
                       child: Container(
                         height: 56,
                         padding: EdgeInsets.symmetric(
-                          horizontal: 19.5 - 6 * expansion,
+                          horizontal: 19.5 - 6.0 * expansion,
                         ),
                         decoration: BoxDecoration(
                           border: Border(
@@ -120,66 +289,13 @@ class AppNavigationRail extends StatelessWidget {
                         ),
                         child: Row(
                           children: [
-                            Container(
-                              width: 32,
-                              height: 32,
-                              decoration: BoxDecoration(
-                                gradient: LinearGradient(
-                                  colors: [
-                                    colors.primary,
-                                    colors.primary.withValues(alpha: 0.75),
-                                  ],
-                                ),
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                              child: const Icon(
-                                Symbols.play_arrow_rounded,
-                                size: 20,
-                                color: Colors.white,
-                              ),
-                            ),
+                            logoBox,
                             Expanded(
                               child: _RailDetails(
-                                expansion: expansion,
+                                isExpanded: isExpanded,
+                                opacity: _detailsOpacity,
                                 width: 172,
-                                child: Row(
-                                  children: [
-                                    const SizedBox(width: 10),
-                                    Expanded(
-                                      child: RichText(
-                                        text: TextSpan(
-                                          children: [
-                                            TextSpan(
-                                              text: 'Aero',
-                                              style: TextStyle(
-                                                fontFamily: 'Manrope',
-                                                fontSize: 18,
-                                                fontWeight: FontWeight.w800,
-                                                color: colors.onSurface,
-                                                letterSpacing: -0.4,
-                                              ),
-                                            ),
-                                            TextSpan(
-                                              text: 'Tube',
-                                              style: TextStyle(
-                                                fontFamily: 'Manrope',
-                                                fontSize: 18,
-                                                fontWeight: FontWeight.w400,
-                                                color: colors.primary,
-                                                letterSpacing: -0.4,
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                    ),
-                                    Icon(
-                                      Symbols.menu_open_rounded,
-                                      size: 18,
-                                      color: colors.onSurfaceMuted,
-                                    ),
-                                  ],
-                                ),
+                                child: headerDetails,
                               ),
                             ),
                           ],
@@ -188,25 +304,20 @@ class AppNavigationRail extends StatelessWidget {
                     ),
                   ),
                 ),
-                SizedBox(
-                  height: 10 + 26 * expansion,
-                  child: _RailDetails(
-                    expansion: expansion,
-                    width: 232,
-                    child: Padding(
-                      padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
-                      child: Text(
-                        'WORKSPACE',
-                        style: AeroText.caption.copyWith(
-                          fontSize: 10,
-                          fontWeight: FontWeight.w700,
-                          color: colors.onSurfaceFaint,
-                          letterSpacing: 1.2,
-                        ),
+                ClipRect(
+                  child: Align(
+                    alignment: Alignment.topLeft,
+                    heightFactor: expansion,
+                    child: SizedBox(
+                      width: AppNavigationRail.expandedWidth,
+                      child: FadeTransition(
+                        opacity: _detailsOpacity,
+                        child: workspaceLabel,
                       ),
                     ),
                   ),
                 ),
+                if (expansion < 1.0) SizedBox(height: 8.0 * (1.0 - expansion)),
                 Expanded(
                   child: ListView.separated(
                     padding: const EdgeInsets.symmetric(
@@ -222,6 +333,8 @@ class AppNavigationRail extends StatelessWidget {
                       return _RailRow(
                         key: ValueKey('sidebar-${item.label}'),
                         expansion: expansion,
+                        isExpanded: isExpanded,
+                        opacity: _detailsOpacity,
                         selected: selected,
                         tooltip: '${item.label} (${item.shortcut})',
                         onTap: () => nav.setIndex(index),
@@ -257,7 +370,6 @@ class AppNavigationRail extends StatelessWidget {
                               _Shortcut(
                                 text: item.shortcut.split(',').first.trim(),
                               ),
-                            // The single badge is positioned by _RailRow throughout the animation.
                             if (count > 0) const SizedBox(width: 28),
                           ],
                         ),
@@ -278,6 +390,8 @@ class AppNavigationRail extends StatelessWidget {
                       _RailRow(
                         key: const ValueKey('sidebar-account'),
                         expansion: expansion,
+                        isExpanded: isExpanded,
+                        opacity: _detailsOpacity,
                         height: 44,
                         tooltip: loggedIn
                             ? 'Signed in (Cookies active)'
@@ -308,9 +422,7 @@ class AppNavigationRail extends StatelessWidget {
                                         ),
                                       )
                                     : Icon(
-                                        loggedIn
-                                            ? Symbols.person_rounded
-                                            : Symbols.person_rounded,
+                                        Symbols.person_rounded,
                                         size: 15,
                                         color: colors.onSurfaceMuted,
                                       ),
@@ -380,6 +492,8 @@ class AppNavigationRail extends StatelessWidget {
                       _RailRow(
                         key: const ValueKey('sidebar-theme'),
                         expansion: expansion,
+                        isExpanded: isExpanded,
+                        opacity: _detailsOpacity,
                         height: 38,
                         tooltip: 'Toggle theme ($themeLabel)',
                         onTap: () => settings.setThemeMode(
@@ -416,46 +530,47 @@ class AppNavigationRail extends StatelessWidget {
                 ),
               ],
             ),
-          ),
-        )
-        .animate(controller: entranceController)
-        .fadeIn(
-          duration: appMotionDuration(context, 150.ms),
-          curve: AppMotion.decelerate,
-        )
-        .slideX(
-          begin: settings.enableAnimations ? -0.06 : 0,
-          end: 0,
-          duration: appMotionDuration(context, 180.ms),
-          curve: AppMotion.decelerate,
-        );
+          );
+        },
+      ),
+    );
+
+    if (!settings.enableAnimations) {
+      return rail;
+    }
+
+    return FadeTransition(
+      opacity: _entranceFade,
+      child: SlideTransition(position: _entranceSlide, child: rail),
+    );
   }
 }
 
-/// Fixed-width text stays mounted and fades within its shrinking slot.
+/// Fixed-width text stays mounted and fades smoothly within its shrinking slot.
 class _RailDetails extends StatelessWidget {
-  final double expansion;
+  final bool isExpanded;
+  final Animation<double> opacity;
   final double width;
   final Widget child;
+
   const _RailDetails({
-    required this.expansion,
+    required this.isExpanded,
+    required this.opacity,
     required this.child,
     this.width = 162,
   });
+
   @override
-  Widget build(BuildContext context) => ExcludeSemantics(
-    excluding: expansion < 1,
-    child: IgnorePointer(
-      ignoring: expansion < 1,
-      child: ClipRect(
-        child: OverflowBox(
-          alignment: Alignment.centerLeft,
-          minWidth: width,
-          maxWidth: width,
-          child: Opacity(
-            opacity: expansion,
-            child: SizedBox(width: width, child: child),
-          ),
+  Widget build(BuildContext context) => IgnorePointer(
+    ignoring: !isExpanded,
+    child: ClipRect(
+      child: OverflowBox(
+        alignment: Alignment.centerLeft,
+        minWidth: width,
+        maxWidth: width,
+        child: FadeTransition(
+          opacity: opacity,
+          child: SizedBox(width: width, child: child),
         ),
       ),
     ),
@@ -464,6 +579,8 @@ class _RailDetails extends StatelessWidget {
 
 class _RailRow extends StatefulWidget {
   final double expansion;
+  final bool isExpanded;
+  final Animation<double> opacity;
   final double height;
   final bool selected;
   final int badgeCount;
@@ -471,9 +588,12 @@ class _RailRow extends StatefulWidget {
   final VoidCallback onTap;
   final Widget icon;
   final Widget details;
+
   const _RailRow({
     super.key,
     required this.expansion,
+    required this.isExpanded,
+    required this.opacity,
     required this.tooltip,
     required this.onTap,
     required this.icon,
@@ -482,12 +602,14 @@ class _RailRow extends StatefulWidget {
     this.selected = false,
     this.badgeCount = 0,
   });
+
   @override
   State<_RailRow> createState() => _RailRowState();
 }
 
 class _RailRowState extends State<_RailRow> {
   bool _hovered = false;
+
   @override
   Widget build(BuildContext context) {
     final colors = context.aero;
@@ -551,7 +673,8 @@ class _RailRowState extends State<_RailRow> {
                         ),
                         Expanded(
                           child: _RailDetails(
-                            expansion: widget.expansion,
+                            isExpanded: widget.isExpanded,
+                            opacity: widget.opacity,
                             child: widget.details,
                           ),
                         ),

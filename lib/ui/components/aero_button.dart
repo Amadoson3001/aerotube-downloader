@@ -421,10 +421,6 @@ class _AeroButtonState extends State<AeroButton> {
       ),
     );
 
-    if (widget.tooltip != null) {
-      button = Tooltip(message: widget.tooltip!, child: button);
-    }
-
     button = Semantics(
       container: true,
       button: true,
@@ -433,6 +429,10 @@ class _AeroButtonState extends State<AeroButton> {
       excludeSemantics: widget.text != null,
       child: button,
     );
+
+    if (widget.tooltip != null) {
+      button = Tooltip(message: widget.tooltip!, child: button);
+    }
 
     return button;
   }

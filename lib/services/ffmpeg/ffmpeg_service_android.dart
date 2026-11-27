@@ -15,19 +15,15 @@ class FfmpegServiceAndroid implements FfmpegToolService {
 
   /// Initialize FFmpeg.
   ///
-  /// Marks the service ready after a successful native version probe.
-  /// A null version does not necessarily mean FFmpeg is unusable — yt-dlp
-  /// may still merge via its bundled copy — but we never invent a fake
-  /// version string.
+  /// The native availability probe returns a label after verifying the
+  /// bundled payload.
   @override
   Future<void> initialize({bool force = false}) async {
     if (_isInitialized && !force) return;
 
     try {
-      // Ask native for the real bundled FFmpeg version. May be null if the
-      // native method is unavailable or the library does not expose it.
       _ffmpegVersion = await NativeYtdlpAndroid.getFfmpegVersion();
-      _isInitialized = true;
+      _isInitialized = _ffmpegVersion != null;
 
       if (_ffmpegVersion != null) {
         _logger.info(
@@ -35,9 +31,8 @@ class FfmpegServiceAndroid implements FfmpegToolService {
           component: 'FfmpegServiceAndroid',
         );
       } else {
-        _logger.info(
-          'FFmpeg marked available after init; native version string was '
-          'null (yt-dlp may still use its bundled FFmpeg for merging)',
+        _logger.warning(
+          'Bundled FFmpeg is unavailable',
           component: 'FfmpegServiceAndroid',
         );
       }
@@ -67,11 +62,7 @@ class FfmpegServiceAndroid implements FfmpegToolService {
   @override
   set ffmpegPath(String? _) {}
 
-  /// True after [initialize] completes without throwing.
-  ///
-  /// A null [getVersion] does not flip this to false: yt-dlp can still
-  /// merge streams with its bundled FFmpeg even when no version string
-  /// is exposed to Dart.
+  /// True when the native probe has confirmed the bundled payload.
   @override
   bool get isAvailable => _isInitialized;
 
