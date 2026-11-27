@@ -131,47 +131,47 @@ class _SearchScreenState extends State<SearchScreen> {
     }
   }
 
+  int? _targetHeightForDefaultQuality(String quality) {
+    switch (quality) {
+      case '4K':
+        return 2160;
+      case '1080p':
+        return 1080;
+      case '720p':
+        return 720;
+      case '480p':
+        return 480;
+      default:
+        return null;
+    }
+  }
+
   Future<void> _downloadBest(SearchVideoResult video) async {
-    final videoProvider = context.read<VideoProvider>();
-    AeroSnack.info(context, message: 'Fetching "${video.title}"...');
+    final settingsProvider = context.read<PlatformSettingsProvider>();
+    final defaultQuality = settingsProvider.defaultQuality;
+    final audioOnly = defaultQuality == 'Audio Only';
+    final targetHeight = _targetHeightForDefaultQuality(defaultQuality);
+    final mode = audioOnly ? DownloadMode.audioOnly : DownloadMode.videoWithAudio;
 
     try {
-      await videoProvider.fetchVideoInfo(video.videoUrl);
-      if (!mounted) return;
-
-      if (videoProvider.videoInfo == null) {
-        AeroSnack.error(
-          context,
-          message: 'Could not fetch format info for "${video.title}".',
-          actionLabel: 'Details',
-          onAction: () => _openConfig(video),
-        );
-        return;
-      }
-
       if (PlatformUtils.isMobile) {
         final downloadProvider = context.read<MobileDownloadProvider>();
-        final estSize = videoProvider.totalEstimatedDownloadSize;
         final queued = await downloadProvider.addDownload(
-          url: videoProvider.currentUrl,
-          title: videoProvider.videoInfo!.title,
-          thumbnailUrl: videoProvider.videoInfo!.thumbnailUrl,
-          mode: DownloadMode.videoWithAudio,
-          formatId: videoProvider.selectedVideoFormatId,
-          estimatedFileSize: estSize > 0 ? estSize : null,
+          url: video.videoUrl,
+          title: video.title,
+          thumbnailUrl: video.thumbnailUrl,
+          mode: mode,
           options: {
-            'audioFormatId': videoProvider.selectedAudioFormatId,
-            'targetHeight': videoProvider.selectedHeight,
-            'audioQuality': videoProvider.selectedAudioQuality.ytdlpValue,
+            if (targetHeight != null) 'targetHeight': targetHeight,
+            'audioQuality': AudioQuality.high.ytdlpValue,
             'embedSubtitles': false,
-            'estimatedFileSize': estSize > 0 ? estSize : null,
           },
         );
         if (mounted) {
           if (queued) {
             AeroSnack.success(
               context,
-              message: 'Queued best quality: "${video.title}"',
+              message: 'Queued ${audioOnly ? 'audio' : defaultQuality}: "${video.title}"',
             );
           } else {
             AeroSnack.warning(
@@ -182,30 +182,39 @@ class _SearchScreenState extends State<SearchScreen> {
         }
       } else {
         final downloadProvider = context.read<DownloadProvider>();
-        final settingsProvider = context.read<PlatformSettingsProvider>();
         final outputPath =
             settingsProvider.settings.outputPath ??
             await settingsProvider.getDefaultOutputPath();
-        final estSize = videoProvider.totalEstimatedDownloadSize;
+        final minimalVideo = VideoInfo(
+          id: video.id,
+          title: video.title,
+          channel: video.author,
+          channelUrl: '',
+          thumbnailUrl: video.thumbnailUrl,
+          duration: video.duration?.inSeconds ?? 0,
+          description: '',
+          viewCount: video.viewCount ?? 0,
+          uploadDate: video.uploadDate ?? '',
+          formats: const [],
+          url: video.videoUrl,
+          subtitles: const [],
+        );
         final queued = await downloadProvider.startDownload(
-          video: videoProvider.videoInfo!,
+          video: minimalVideo,
           outputPath: outputPath,
-          mode: DownloadMode.videoWithAudio,
-          formatId: videoProvider.selectedVideoFormatId,
-          audioFormatId: videoProvider.selectedAudioFormatId,
-          targetHeight: videoProvider.selectedHeight,
-          audioQuality: videoProvider.selectedAudioQuality.ytdlpValue,
+          mode: mode,
+          targetHeight: targetHeight,
+          audioQuality: AudioQuality.high.ytdlpValue,
           embedThumbnail: settingsProvider.settings.embedThumbnail,
           embedMetadata: settingsProvider.settings.embedMetadata,
           sponsorBlock: settingsProvider.sponsorBlockEnabled,
           useDownloadArchive: settingsProvider.useDownloadArchive,
-          estimatedFileSize: estSize > 0 ? estSize : null,
         );
         if (mounted) {
           if (queued) {
             AeroSnack.success(
               context,
-              message: 'Queued best quality: "${video.title}"',
+              message: 'Queued ${audioOnly ? 'audio' : defaultQuality}: "${video.title}"',
             );
           } else {
             AeroSnack.warning(context, message: 'Already in download queue');

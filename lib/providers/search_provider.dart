@@ -82,10 +82,7 @@ class SearchProvider extends ChangeNotifier {
 
   int _searchGen = 0;
 
-  bool _isVpnError(String m) {
-    final l = m.toLowerCase();
-    return l.contains('timed out') || l.contains('timeout') || l.contains('vpn') || l.contains('socket') || l.contains('connection');
-  }
+  bool _isVpnError(String m) => ErrorHelper.isVpnOrNetworkError(m);
 
   Future<void> search(
     String query, {

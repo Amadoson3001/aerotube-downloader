@@ -260,11 +260,17 @@ object YtDlpRequestFactory {
         }
 
         options += YtDlpArg.Flag("--force-ipv4")
-        options += YtDlpArg.Opt("--socket-timeout", "15")
-        // Interactive metadata must not spend the download retry budget on
-        // each HTTP request. Downloads retain their full retry policy.
-        options += YtDlpArg.Opt("--retries", "3")
-        options += YtDlpArg.Opt("--extractor-retries", "3")
+        if (fallback) {
+            options += YtDlpArg.Opt("--socket-timeout", "15")
+            options += YtDlpArg.Opt("--retries", "3")
+            options += YtDlpArg.Opt("--extractor-retries", "3")
+        } else {
+            // Fast primary settings for interactive metadata; fallback restores
+            // patient retries when primary hits a flaky/auth path.
+            options += YtDlpArg.Opt("--socket-timeout", "10")
+            options += YtDlpArg.Opt("--retries", "1")
+            options += YtDlpArg.Opt("--extractor-retries", "1")
+        }
         // Listing formats doesn't need to download probe fragments. The actual
         // download still re-extracts and validates the selected streams.
         options += YtDlpArg.Flag("--no-check-formats")

@@ -5,14 +5,18 @@ import '../models/video_info.dart';
 import '../models/playlist_info.dart';
 import '../models/search_video_result.dart';
 import '../services/ytdlp/ytdlp_tool_service.dart';
+import '../services/core/fast_youtube_metadata_service.dart';
 import '../services/core/logging_service.dart';
 import '../services/core/fetch_priority.dart';
 import '../core/utils/error_helper.dart';
 import '../core/constants/app_constants.dart';
 import '../core/utils/platform_utils.dart';
+import '../core/utils/url_validator.dart';
 
 class VideoProvider extends ChangeNotifier {
   final YtdlpToolService _ytdlpService;
+  final FastYouTubeMetadataService _fastMetadataService;
+  final bool _ownsFastMetadataService;
 
   VideoInfo? _videoInfo;
   PlaylistInfo? _playlistInfo;
@@ -77,7 +81,12 @@ class VideoProvider extends ChangeNotifier {
     }
   }
 
-  VideoProvider(this._ytdlpService);
+  VideoProvider(
+    this._ytdlpService, {
+    FastYouTubeMetadataService? fastMetadataService,
+  }) : _fastMetadataService =
+           fastMetadataService ?? FastYouTubeMetadataService(),
+       _ownsFastMetadataService = fastMetadataService == null;
 
   VideoInfo? get videoInfo => _videoInfo;
   PlaylistInfo? get playlistInfo => _playlistInfo;
@@ -190,17 +199,7 @@ class VideoProvider extends ChangeNotifier {
     return isEst ? '~$str' : str;
   }
 
-  bool _isVpnError(String msg) {
-    final l = msg.toLowerCase();
-    return l.contains('timed out') ||
-        l.contains('timeout') ||
-        l.contains('vpn') ||
-        l.contains('temporary failure in name resolution') ||
-        l.contains('unable to download webpage') ||
-        l.contains('connection timed out') ||
-        l.contains('network is unreachable') ||
-        l.contains('failed host lookup');
-  }
+  bool _isVpnError(String msg) => ErrorHelper.isVpnOrNetworkError(msg);
 
   /// Cancel an in-flight fetch (Windows & Android). Kills yt-dlp process via service.
   Future<void> cancelFetch() async {
@@ -386,6 +385,9 @@ class VideoProvider extends ChangeNotifier {
     } catch (_) {}
 
     if (myGen != _fetchGen || _isDisposed) return;
+    if (!hasFullCache && previewHint == null && UrlValidator.isYouTubeUrl(url)) {
+      unawaited(_fetchFastPreview(url, myGen));
+    }
     try {
       FetchPriority.beginInteractive();
       LoggingService().debug(
@@ -461,10 +463,7 @@ class VideoProvider extends ChangeNotifier {
       String cleanedError = _cleanErrorMessage(rawError);
       // Enrich timeout/VPN errors with user-friendly hint if not already present
       if (e is TimeoutException || _isVpnError(rawError)) {
-        if (!cleanedError.toLowerCase().contains('vpn')) {
-          cleanedError =
-              'Fetch timed out - VPN may be slowing connection, try again or disable VPN. ($cleanedError)';
-        }
+        cleanedError = ErrorHelper.enrichVpnTimeoutMessage(cleanedError);
       }
       _technicalError = cleanedError;
       _requiresYtdlpUpdate = _shouldSuggestYtdlpUpdate(cleanedError);
@@ -507,8 +506,37 @@ class VideoProvider extends ChangeNotifier {
     }
   }
 
+  Future<void> _fetchFastPreview(String url, int myGen) async {
+    final preview = await _fastMetadataService.fetchPreview(url);
+    if (preview == null ||
+        myGen != _fetchGen ||
+        !_isLoading ||
+        _videoInfo != null ||
+        _isDisposed) {
+      return;
+    }
+    _videoInfo = VideoInfo(
+      id: preview.id,
+      title: preview.title,
+      channel: preview.author,
+      channelUrl: '',
+      thumbnailUrl: preview.thumbnailUrl,
+      duration: preview.duration?.inSeconds ?? 0,
+      description: '',
+      viewCount: preview.viewCount ?? 0,
+      uploadDate: preview.uploadDate ?? '',
+      formats: const [],
+      url: url,
+      subtitles: const [],
+    );
+    _isPreviewOnly = true;
+    _loadingStatus = 'Loading stream formats...';
+    _appendFetchLog('Loaded instant preview while fetching stream formats');
+    notifyListeners();
+  }
+
   /// The Core Logic: Separate streams, group by resolution, find best bitrate
-  void _processFormats() {
+  void _processFormats({bool probeSizes = true}) {
     if (_videoInfo == null) return;
 
     // Return cached if same video
@@ -639,7 +667,9 @@ class VideoProvider extends ChangeNotifier {
     }
     // Background: probe HEAD for first videos' real sizes to correct heuristic estimate
     // Fire-and-forget, throttled to 8 formats to avoid hammering
-    unawaited(_probeHeadSizes());
+    if (probeSizes) {
+      unawaited(_probeHeadSizes());
+    }
   }
 
   Future<void> _probeHeadSizes() async {
@@ -703,7 +733,9 @@ class VideoProvider extends ChangeNotifier {
       });
 
       final results = await Future.wait(probeFutures);
-      if (_cachedVideoId != _videoInfo?.id || _videoInfo == null) return;
+      if (_isDisposed || _cachedVideoId != _videoInfo?.id || _videoInfo == null) {
+        return;
+      }
 
       bool anyApplied = false;
       for (final res in results) {
@@ -723,7 +755,7 @@ class VideoProvider extends ChangeNotifier {
         final prevAudioId = _selectedAudioMergeStream?.formatId;
         final prevOverrideId = _selectedVideoFormatOverride?.formatId;
         _cachedResolutions = null;
-        _processFormats();
+        _processFormats(probeSizes: false);
         if (prevHeight != null) {
           _selectedResolution = _availableResolutions.firstWhere(
             (r) => r.height == prevHeight,
@@ -848,10 +880,7 @@ class VideoProvider extends ChangeNotifier {
       final rawError = e.toString();
       String cleanedError = _cleanErrorMessage(rawError);
       if (e is TimeoutException || _isVpnError(rawError)) {
-        if (!cleanedError.toLowerCase().contains('vpn')) {
-          cleanedError =
-              'Fetch timed out - VPN may be slowing connection, try again or disable VPN. ($cleanedError)';
-        }
+        cleanedError = ErrorHelper.enrichVpnTimeoutMessage(cleanedError);
       }
       _technicalError = cleanedError;
       _requiresYtdlpUpdate = _shouldSuggestYtdlpUpdate(cleanedError);
@@ -1119,6 +1148,9 @@ class VideoProvider extends ChangeNotifier {
   @override
   void dispose() {
     _isDisposed = true;
+    if (_ownsFastMetadataService) {
+      _fastMetadataService.dispose();
+    }
     super.dispose();
   }
 }

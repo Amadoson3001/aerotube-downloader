@@ -2,11 +2,41 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import '../../models/video_info.dart';
 import '../core/logging_service.dart';
 import '../../core/utils/url_validator.dart';
 
 Map<String, dynamic> _decodeJsonMap(String raw) =>
     jsonDecode(raw) as Map<String, dynamic>;
+
+({bool cancelled, String? error, VideoInfo? info}) _decodeAndParseVideoInfo(
+  String raw,
+) {
+  final parsed = jsonDecode(raw) as Map<String, dynamic>;
+  if (parsed['cancelled'] == true) {
+    return (
+      cancelled: true,
+      error: parsed['error']?.toString() ?? 'Fetch cancelled by user',
+      info: null,
+    );
+  }
+  if (parsed['success'] == false) {
+    return (
+      cancelled: false,
+      error: parsed['error']?.toString() ?? 'Unknown error',
+      info: null,
+    );
+  }
+  final infoData = parsed['info'];
+  if (infoData is! Map<String, dynamic>) {
+    return (
+      cancelled: false,
+      error: 'No info object found in result',
+      info: null,
+    );
+  }
+  return (cancelled: false, error: null, info: VideoInfo.fromJson(infoData));
+}
 
 String _validateUrl(String url) {
   try {
@@ -134,6 +164,50 @@ class NativeYtdlpAndroid {
       throw Exception('Platform error: ${e.message}');
     } catch (e) {
       rethrow;
+    }
+  }
+
+  /// Get and parse [VideoInfo] in a single background isolate pass, avoiding
+  /// transferring a large raw Map across isolates or running `fromJson` on UI.
+  static Future<VideoInfo> getVideoInfoParsed(
+    String url, {
+    String? cookiesPath,
+    String? userAgent,
+    String? requestId,
+  }) async {
+    try {
+      final validatedUrl = _validateUrl(url);
+      final result = await _channel.invokeMethod<String>('getVideoInfo', {
+        'url': validatedUrl,
+        'cookies_path': cookiesPath,
+        'user_agent': userAgent,
+        if (requestId != null) 'request_id': requestId,
+      }).timeout(const Duration(seconds: 90));
+
+      if (result == null) {
+        throw Exception('Failed to get video info: null response');
+      }
+
+      final outcome = await compute(_decodeAndParseVideoInfo, result);
+      if (outcome.cancelled) {
+        throw NativeFetchCancelledException(
+          outcome.error ?? 'Fetch cancelled by user',
+        );
+      }
+      if (outcome.info == null) {
+        LoggingService().error(
+          'Error: ${outcome.error}',
+          component: 'NativeYtdlpAndroid',
+        );
+        throw Exception(outcome.error ?? 'Unknown error');
+      }
+      LoggingService().info(
+        'Successfully got video info',
+        component: 'NativeYtdlpAndroid',
+      );
+      return outcome.info!;
+    } on PlatformException catch (e) {
+      throw Exception('Platform error: ${e.message}');
     }
   }
 

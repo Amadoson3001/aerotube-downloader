@@ -1,9 +1,6 @@
 import 'dart:async';
-import 'dart:convert';
-import 'dart:io';
 
 import 'package:flutter/foundation.dart';
-import 'package:http/http.dart' as http;
 
 import '../../models/video_info.dart';
 import '../../models/playlist_info.dart';
@@ -15,6 +12,7 @@ import '../../core/utils/error_helper.dart';
 import '../../core/utils/url_validator.dart';
 import 'native_ytdlp_android.dart';
 import 'video_info_cache.dart';
+import 'ytdlp_release_checker.dart';
 import 'ytdlp_tool_service.dart';
 
 export 'ytdlp_tool_service.dart' show YtdlpUpdateInfo;
@@ -29,28 +27,11 @@ class YtdlpServiceAndroid implements YtdlpToolService {
   bool _isInitialized = false;
   String? _installedVersion;
   Future<String?>? _versionProbe;
-  String? _cachedLatestVersion;
-  DateTime? _cacheTime;
-  static DateTime? _lastFetchAttempt;
-  static const Duration _cacheExpiry = Duration(minutes: 60);
-  static const Duration _throttleWindow = Duration(seconds: 60);
+  final YtdlpReleaseChecker _releaseChecker = YtdlpReleaseChecker(
+    componentName: 'YtdlpServiceAndroid',
+  );
 
   final LoggingService _logger = LoggingService();
-
-  String? _getGithubToken() {
-    try {
-      final env = Platform.environment['GITHUB_TOKEN'];
-      if (env != null && env.isNotEmpty) return env;
-    } catch (_) {}
-    const fromEnv = String.fromEnvironment('GITHUB_TOKEN');
-    if (fromEnv.isNotEmpty) return fromEnv;
-    return null;
-  }
-
-  bool _isRateLimit(Object e) {
-    final m = e.toString().toLowerCase();
-    return m.contains('rate limit') || m.contains('403') || m.contains('429');
-  }
 
   // Cancellation support (mirrors Windows) + native request ID tracking
   int _fetchGen = 0;
@@ -63,6 +44,7 @@ class YtdlpServiceAndroid implements YtdlpToolService {
     final reqIds = _activeFetchRequestIds.toList();
     _activeFetchRequestIds.clear();
     _videoCache.clearInFlight();
+    _playlistCache.clearInFlight();
     if (reqIds.isEmpty) {
       await NativeYtdlpAndroid.cancelFetch();
     } else {
@@ -85,6 +67,8 @@ class YtdlpServiceAndroid implements YtdlpToolService {
   /// In-memory getVideoInfo cache keyed by normalized URL + auth context
   /// with a 10-minute TTL and 30-entry LRU cap.
   static final MetadataCache<VideoInfo> _videoCache = MetadataCache<VideoInfo>();
+  static final MetadataCache<PlaylistInfo> _playlistCache =
+      MetadataCache<PlaylistInfo>();
 
   /// Build cache key including normalized URL and authentication context.
   String _buildVideoInfoCacheKey(String url) {
@@ -252,88 +236,8 @@ class YtdlpServiceAndroid implements YtdlpToolService {
 
   /// Get latest available version - uses GitHub API (rate-limit friendly)
   @override
-  Future<String?> getLatestVersion({bool forceRefresh = false}) async {
-    final now = DateTime.now();
-
-    // Throttle: at most once per 60s
-    if (!forceRefresh &&
-        _lastFetchAttempt != null &&
-        now.difference(_lastFetchAttempt!) < _throttleWindow) {
-      if (_cachedLatestVersion != null) {
-        _logger.debug(
-          'Android getLatestVersion throttled, returning cached $_cachedLatestVersion',
-          component: 'YtdlpServiceAndroid',
-        );
-        return _cachedLatestVersion;
-      }
-      _logger.debug(
-        'Android getLatestVersion throttled, no cache yet',
-        component: 'YtdlpServiceAndroid',
-      );
-      return null;
-    }
-
-    // Cache expiry: 60 minutes
-    if (!forceRefresh &&
-        _cachedLatestVersion != null &&
-        _cacheTime != null &&
-        now.difference(_cacheTime!) < _cacheExpiry) {
-      return _cachedLatestVersion;
-    }
-
-    _lastFetchAttempt = now;
-
-    final token = _getGithubToken();
-    final headers = <String, String>{
-      'Accept': 'application/vnd.github.v3+json',
-      'User-Agent': 'AeroTube-Updater',
-      if (token != null && token.isNotEmpty) 'Authorization': 'Bearer $token',
-    };
-
-    try {
-      final response = await http
-          .get(
-            Uri.parse(AppConstants.ytdlpLatestReleaseApiUrl),
-            headers: headers,
-          )
-          .timeout(const Duration(seconds: 15));
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        final tagName = data['tag_name'] as String?;
-        if (tagName != null && tagName.isNotEmpty) {
-          _cachedLatestVersion = tagName;
-          _cacheTime = DateTime.now();
-          return tagName;
-        }
-        return null;
-      } else if (response.statusCode == 403 || response.statusCode == 429) {
-        if (_cachedLatestVersion != null) {
-          _logger.warning(
-            'Rate limited but returning cached $_cachedLatestVersion',
-            component: 'YtdlpServiceAndroid',
-          );
-          return _cachedLatestVersion;
-        }
-        throw Exception(
-          'GitHub API rate limit (${response.statusCode}): ${response.body.substring(0, response.body.length > 300 ? 300 : response.body.length)} '
-          'Try again later or set GITHUB_TOKEN for higher limits.',
-        );
-      } else {
-        throw Exception(
-          'GitHub API error ${response.statusCode}: ${response.body}',
-        );
-      }
-    } catch (e) {
-      if (_isRateLimit(e) && _cachedLatestVersion != null) {
-        _logger.warning(
-          'Rate limit exception but returning cached $_cachedLatestVersion: $e',
-          component: 'YtdlpServiceAndroid',
-        );
-        return _cachedLatestVersion;
-      }
-      rethrow;
-    }
-  }
+  Future<String?> getLatestVersion({bool forceRefresh = false}) =>
+      _releaseChecker.getLatestVersion(forceRefresh: forceRefresh);
 
   bool _isNewerVersion(String current, String latest) =>
       VersionUtils.isNewerVersion(current, latest);
@@ -524,7 +428,7 @@ class YtdlpServiceAndroid implements YtdlpToolService {
 
     final future = () async {
       try {
-        final result = await NativeYtdlpAndroid.getVideoInfo(
+        final info = await NativeYtdlpAndroid.getVideoInfoParsed(
           url,
           cookiesPath: _enableCookies ? _cookiePath : null,
           userAgent: _userAgent,
@@ -533,17 +437,6 @@ class YtdlpServiceAndroid implements YtdlpToolService {
 
         _checkFetchGeneration(gen);
 
-        _logger.debug(
-          'Raw video info result: ${result.keys.join(', ')}',
-          component: 'YtdlpServiceAndroid',
-        );
-
-        final infoData = result['info'];
-        if (infoData == null) {
-          throw YtdlpAndroidException('No info object found in result');
-        }
-
-        final info = VideoInfo.fromJson(result['info'] as Map<String, dynamic>);
         _videoCache.put(cacheKey, info);
         return info;
       } on TimeoutException {
@@ -578,6 +471,18 @@ class YtdlpServiceAndroid implements YtdlpToolService {
     Function(String status)? onProgress,
   }) async {
     final gen = _fetchGen;
+    final cacheKey =
+        '${_buildVideoInfoCacheKey(url)}|items=${playlistItems?.trim() ?? ''}';
+    final cached = _playlistCache.get(cacheKey);
+    if (cached != null) {
+      return cached;
+    }
+    final existingInFlight = _playlistCache.getInFlight(cacheKey);
+    if (existingInFlight != null) {
+      onProgress?.call('Fetching playlist information...');
+      return existingInFlight;
+    }
+
     final requestId = 'fetch_playlist_${++_requestSeq}_$gen';
     _activeFetchRequestIds.add(requestId);
 
@@ -589,44 +494,52 @@ class YtdlpServiceAndroid implements YtdlpToolService {
       component: 'YtdlpServiceAndroid',
     );
 
-    try {
-      final result = await NativeYtdlpAndroid.getPlaylistInfo(
-        url,
-        cookiesPath: _enableCookies ? _cookiePath : null,
-        userAgent: _userAgent,
-        playlistItems: playlistItems,
-        requestId: requestId,
-      );
+    final future = () async {
+      try {
+        final result = await NativeYtdlpAndroid.getPlaylistInfo(
+          url,
+          cookiesPath: _enableCookies ? _cookiePath : null,
+          userAgent: _userAgent,
+          playlistItems: playlistItems,
+          requestId: requestId,
+        );
 
-      _checkFetchGeneration(gen);
+        _checkFetchGeneration(gen);
 
-      _logger.debug(
-        'Raw playlist info result keys: ${result.keys.join(', ')}',
-        component: 'YtdlpServiceAndroid',
-      );
+        _logger.debug(
+          'Raw playlist info result keys: ${result.keys.join(', ')}',
+          component: 'YtdlpServiceAndroid',
+        );
 
-      final playlistData = result['playlist'];
-      if (playlistData == null) {
-        throw YtdlpAndroidException('No playlist object found in result');
-      }
+        final playlistData = result['playlist'];
+        if (playlistData == null) {
+          throw YtdlpAndroidException('No playlist object found in result');
+        }
 
-      return PlaylistInfo.fromJson(result['playlist'] as Map<String, dynamic>);
-    } on NativeFetchCancelledException catch (e) {
-      throw YtdlpFetchCancelledException(e.message);
-    } catch (e, stackTrace) {
-      if (e is YtdlpFetchCancelledException) {
+        final info = PlaylistInfo.fromJson(
+          result['playlist'] as Map<String, dynamic>,
+        );
+        _playlistCache.put(cacheKey, info);
+        return info;
+      } on NativeFetchCancelledException catch (e) {
+        throw YtdlpFetchCancelledException(e.message);
+      } catch (e, stackTrace) {
+        if (e is YtdlpFetchCancelledException) {
+          rethrow;
+        }
+        _logger.error(
+          'Failed to get playlist info',
+          component: 'YtdlpServiceAndroid',
+          error: e,
+          stackTrace: stackTrace,
+        );
         rethrow;
+      } finally {
+        _activeFetchRequestIds.remove(requestId);
       }
-      _logger.error(
-        'Failed to get playlist info',
-        component: 'YtdlpServiceAndroid',
-        error: e,
-        stackTrace: stackTrace,
-      );
-      rethrow;
-    } finally {
-      _activeFetchRequestIds.remove(requestId);
-    }
+    }();
+
+    return _playlistCache.trackInFlight(cacheKey, future);
   }
 
   /// yt-dlp search fallback used when youtube_explode search fails.

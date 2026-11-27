@@ -1,6 +1,5 @@
 plugins {
     id("com.android.application")
-    id("kotlin-android")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
 }
@@ -67,7 +66,7 @@ android {
     sourceSets {
         getByName("test") {
             // Canonical Kotlin unit-test source dir (plus existing java/).
-            java.srcDir("src/test/kotlin")
+            java.directories.add("src/test/kotlin")
         }
     }
 }

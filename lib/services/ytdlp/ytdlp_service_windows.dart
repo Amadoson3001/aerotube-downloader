@@ -11,6 +11,7 @@ import '../notification/notification_service.dart';
 import '../core/logging_service.dart';
 import '../core/download_helper.dart';
 import 'video_info_cache.dart';
+import 'ytdlp_release_checker.dart';
 import 'ytdlp_tool_service.dart';
 import '../core/certificate_pinning_service.dart';
 import '../../core/constants/app_constants.dart';
@@ -62,31 +63,58 @@ class YtdlpService implements YtdlpToolService {
   bool _isInitialized = false;
   final CertificatePinningService _certPinningService =
       CertificatePinningService();
-  String? _cachedLatestVersion;
-  DateTime? _cacheTime;
-  static DateTime? _lastFetchAttempt;
-  static const Duration _cacheExpiry = Duration(minutes: 60);
-  static const Duration _throttleWindow = Duration(seconds: 60);
+  late final YtdlpReleaseChecker _releaseChecker = YtdlpReleaseChecker(
+    componentName: 'YtdlpService',
+    clientFactory: _certPinningService.createPinnedHttpClient,
+  );
   final MetadataCache<VideoInfo> _videoCache = MetadataCache<VideoInfo>();
+  final MetadataCache<PlaylistInfo> _playlistCache = MetadataCache<PlaylistInfo>();
   String? _cachedVersion;
-  HttpClient? _pinnedClient;
+  String? _extractorCachePath;
+  String? _pluginDirPath;
 
-  String? _getGithubToken() {
-    try {
-      final env = Platform.environment['GITHUB_TOKEN'];
-      if (env != null && env.isNotEmpty) return env;
-    } catch (_) {}
-    const fromEnv = String.fromEnvironment('GITHUB_TOKEN');
-    if (fromEnv.isNotEmpty) return fromEnv;
-    return null;
-  }
+  static const String _ejsCachePluginSource = '''import os
+import sys
 
-  bool _isRateLimitError(Object e) {
-    final msg = e.toString().toLowerCase();
-    return msg.contains('rate limit') ||
-        msg.contains('403') ||
-        msg.contains('429');
-  }
+try:
+    from yt_dlp.extractor.youtube.jsc._builtin.ejs import EJSBaseJCP
+    EJSBaseJCP._ENABLE_PREPROCESSED_PLAYER_CACHE = True
+except Exception:
+    pass
+
+
+def _prune_challenge_cache():
+    try:
+        argv = sys.argv
+        if '--cache-dir' not in argv:
+            return
+        idx = argv.index('--cache-dir')
+        if idx + 1 >= len(argv):
+            return
+        cache_dir = os.path.join(argv[idx + 1], 'challenge-solver')
+        if not os.path.isdir(cache_dir):
+            return
+        players = []
+        for name in os.listdir(cache_dir):
+            if name.startswith('player') and name.endswith('.json'):
+                p = os.path.join(cache_dir, name)
+                try:
+                    players.append((os.path.getmtime(p), p))
+                except OSError:
+                    pass
+        if len(players) > 3:
+            players.sort(reverse=True)
+            for _, old_path in players[3:]:
+                try:
+                    os.remove(old_path)
+                except OSError:
+                    pass
+    except Exception:
+        pass
+
+
+_prune_challenge_cache()
+''';
 
   static const String _windowsDownloadUrl =
       AppConstants.ytdlpWindowsDownloadUrl;
@@ -163,6 +191,32 @@ class YtdlpService implements YtdlpToolService {
       (_webViewPath != null ||
           (_cookieBrowser != null && _cookieBrowser != 'none'));
 
+  Future<void> _ensureExtractorCacheAndPlugin() async {
+    if (_extractorCachePath != null && _pluginDirPath != null) return;
+    try {
+      final dir = await getApplicationSupportDirectory();
+      _extractorCachePath = p.join(dir.path, 'ytdlp-extractor');
+      _pluginDirPath = p.join(dir.path, 'aerotube-ytdlp-plugins');
+
+      final pluginDir = Directory(
+        p.join(_pluginDirPath!, 'ejs_cache', 'yt_dlp_plugins', 'extractor'),
+      );
+      if (!await pluginDir.exists()) {
+        await pluginDir.create(recursive: true);
+      }
+      final pluginFile = File(p.join(pluginDir.path, 'aerotube_ejs_cache.py'));
+      if (!await pluginFile.exists() ||
+          await pluginFile.readAsString() != _ejsCachePluginSource) {
+        await pluginFile.writeAsString(_ejsCachePluginSource);
+      }
+    } catch (e) {
+      LoggingService().warning(
+        'Failed to prepare yt-dlp EJS cache plugin: $e',
+        component: 'YtdlpService',
+      );
+    }
+  }
+
   /// Initialize the service: locate or download yt-dlp
   @override
   Future<void> initialize({bool force = false}) async {
@@ -174,6 +228,7 @@ class YtdlpService implements YtdlpToolService {
 
     try {
       final dir = await getApplicationSupportDirectory();
+      await _ensureExtractorCacheAndPlugin();
       final executableName = PlatformUtils.isWindows ? 'yt-dlp.exe' : 'yt-dlp';
       final localPath = p.join(dir.path, 'bin', executableName);
       final localFile = File(localPath);
@@ -433,123 +488,8 @@ class YtdlpService implements YtdlpToolService {
 
   /// Check if a newer version of yt-dlp is available on GitHub
   @override
-  Future<String?> getLatestVersion({bool forceRefresh = false}) async {
-    final now = DateTime.now();
-
-    // ── Throttle: at most once per 60s (prevents hammering under VPN shared IP)
-    if (!forceRefresh &&
-        _lastFetchAttempt != null &&
-        now.difference(_lastFetchAttempt!) < _throttleWindow) {
-      if (_cachedLatestVersion != null) {
-        LoggingService().debug(
-          'getLatestVersion throttled, returning cached $_cachedLatestVersion',
-          component: 'YtdlpService',
-        );
-        return _cachedLatestVersion;
-      }
-      // No cache yet but still throttled -> avoid network hammer
-      LoggingService().debug(
-        'getLatestVersion throttled, no cache yet',
-        component: 'YtdlpService',
-      );
-      return null;
-    }
-
-    // ── Cache expiry: 60 minutes
-    if (!forceRefresh &&
-        _cachedLatestVersion != null &&
-        _cacheTime != null &&
-        now.difference(_cacheTime!) < _cacheExpiry) {
-      return _cachedLatestVersion;
-    }
-
-    // Mark attempt time BEFORE network (prevents concurrent hammering)
-    _lastFetchAttempt = now;
-
-    final token = _getGithubToken();
-
-    Future<String?> tryFetch(HttpClient client) async {
-      final request = await client.getUrl(
-        Uri.parse(AppConstants.ytdlpLatestReleaseApiUrl),
-      );
-      request.headers.set('Accept', 'application/vnd.github.v3+json');
-      request.headers.set('User-Agent', 'AeroTube-Updater');
-      if (token != null && token.isNotEmpty) {
-        request.headers.set('Authorization', 'Bearer $token');
-      }
-      final httpResponse = await request.close().timeout(
-        const Duration(seconds: 15),
-      );
-      final responseBody = await httpResponse.transform(utf8.decoder).join();
-      if (httpResponse.statusCode == 200) {
-        final data = jsonDecode(responseBody);
-        final tagName = data['tag_name'] as String?;
-        if (tagName != null && tagName.isNotEmpty) {
-          _cachedLatestVersion = tagName;
-          _cacheTime = DateTime.now();
-          return tagName;
-        }
-        return null;
-      } else if (httpResponse.statusCode == 403 ||
-          httpResponse.statusCode == 429) {
-        final snippet = responseBody.length > 300
-            ? '${responseBody.substring(0, 300)}...'
-            : responseBody;
-        throw YtdlpException(
-          'GitHub API rate limit (${httpResponse.statusCode}). $snippet Try again in a few minutes or check manually at https://github.com/yt-dlp/yt-dlp/releases',
-        );
-      } else {
-        throw YtdlpException(
-          'GitHub API error ${httpResponse.statusCode}: $responseBody',
-        );
-      }
-    }
-
-    try {
-      _pinnedClient ??= _certPinningService.createPinnedHttpClient();
-      final result = await tryFetch(_pinnedClient!);
-      return result;
-    } catch (e) {
-      // Rate-limit -> return cached if available instead of hammering with fallback
-      if (_isRateLimitError(e)) {
-        if (_cachedLatestVersion != null) {
-          LoggingService().warning(
-            'Rate limited but returning cached version $_cachedLatestVersion: $e',
-            component: 'YtdlpService',
-          );
-          return _cachedLatestVersion;
-        }
-        rethrow;
-      }
-      LoggingService().warning(
-        'Pinned client failed, falling back to plain HttpClient: $e',
-        component: 'YtdlpService',
-      );
-      // Fallback: plain client only for non-rate-limit failures (e.g. cert quirks)
-      HttpClient? fallback;
-      try {
-        fallback = HttpClient();
-        final result = await tryFetch(fallback);
-        fallback.close(force: true);
-        return result;
-      } catch (e2) {
-        fallback?.close(force: true);
-        if (_isRateLimitError(e2) && _cachedLatestVersion != null) {
-          LoggingService().warning(
-            'Fallback rate limited but returning cached $_cachedLatestVersion',
-            component: 'YtdlpService',
-          );
-          return _cachedLatestVersion;
-        }
-        if (e2 is YtdlpException) rethrow;
-        LoggingService().warning(
-          'Fallback client also failed: $e2',
-          component: 'YtdlpService',
-        );
-        throw YtdlpException('Failed to check latest version: $e2');
-      }
-    }
-  }
+  Future<String?> getLatestVersion({bool forceRefresh = false}) =>
+      _releaseChecker.getLatestVersion(forceRefresh: forceRefresh);
 
   bool isNewerVersion(String current, String latest) =>
       VersionUtils.isNewerVersion(current, latest);
@@ -559,32 +499,7 @@ class YtdlpService implements YtdlpToolService {
   bool isBrokenError(String error) => ErrorHelper.isBrokenExtractorError(error);
 
   // ── VPN helpers ──────────────────────────────────────────────────────
-  bool _isVpnNetworkError(String msg) {
-    final l = msg.toLowerCase();
-    return l.contains('temporary failure in name resolution') ||
-        l.contains('unable to download webpage') ||
-        l.contains('unable to download json') ||
-        l.contains('unable to download api') ||
-        l.contains('connection timed out') ||
-        l.contains('timed out') ||
-        l.contains('operation timed out') ||
-        l.contains('socket timeout') ||
-        l.contains('read timed out') ||
-        l.contains('failed to resolve') ||
-        l.contains('getaddrinfo failed') ||
-        l.contains('name or service not known') ||
-        l.contains('name not known') ||
-        l.contains('network is unreachable') ||
-        l.contains('no address associated with hostname') ||
-        l.contains('failed host lookup') ||
-        l.contains('connection reset') ||
-        l.contains('connection refused') ||
-        l.contains('network is down') ||
-        l.contains('no route to host') ||
-        l.contains('ssl:') && l.contains('timeout') ||
-        l.contains('errno 110') ||
-        l.contains('errno -3');
-  }
+  bool _isVpnNetworkError(String msg) => ErrorHelper.isVpnOrNetworkError(msg);
 
   bool _isCookieRelatedError(String msg) {
     final l = msg.toLowerCase();
@@ -613,6 +528,9 @@ class YtdlpService implements YtdlpToolService {
       '--newline',
       '--no-playlist',
       '--skip-download',
+      '--no-check-formats',
+      if (_extractorCachePath != null) ...['--cache-dir', _extractorCachePath!],
+      if (_pluginDirPath != null) ...['--plugin-dirs', _pluginDirPath!],
       '--retries',
       '4',
       '--extractor-retries',
@@ -639,6 +557,9 @@ class YtdlpService implements YtdlpToolService {
       '--newline',
       '--no-playlist',
       '--skip-download',
+      '--no-check-formats',
+      if (_extractorCachePath != null) ...['--cache-dir', _extractorCachePath!],
+      if (_pluginDirPath != null) ...['--plugin-dirs', _pluginDirPath!],
       '--retries',
       '4',
       '--extractor-retries',
@@ -677,6 +598,7 @@ class YtdlpService implements YtdlpToolService {
     _videoFetchGen++;
     _playlistCancelRequested = true;
     _videoCache.clearInFlight();
+    _playlistCache.clearInFlight();
     final vProc = _activeVideoProcess;
     final pProc = _activePlaylistProcess;
     _activeVideoProcess = null;
@@ -708,6 +630,7 @@ class YtdlpService implements YtdlpToolService {
     Function(String status)? onProgress,
   }) async {
     if (!_isInitialized) await initialize();
+    if (_extractorCachePath == null) await _ensureExtractorCacheAndPlugin();
 
     final cacheKey = _buildVideoInfoCacheKey(url);
     final cachedInfo = _videoCache.get(cacheKey);
@@ -1104,13 +1027,21 @@ class YtdlpService implements YtdlpToolService {
   /// in-process retries, no retry-sleep. A healthy network finishes in ~1–3s.
   /// Patient mode restores the VPN-friendly ladder used when the fast pass
   /// hits a timeout or network error.
+  @visibleForTesting
+  List<String> buildVideoInfoArgsForTest(String url, {bool fast = true}) =>
+      _buildVideoInfoArgs(url, fast: fast);
+
   List<String> _buildVideoInfoArgs(String url, {bool fast = true}) {
     final args = <String>[
       '--ignore-config',
       '--newline',
       '--no-playlist',
       '--skip-download',
+      '--no-check-formats',
+      if (_extractorCachePath != null) ...['--cache-dir', _extractorCachePath!],
+      if (_pluginDirPath != null) ...['--plugin-dirs', _pluginDirPath!],
       if (fast) ...[
+        '--force-ipv4',
         '--retries',
         '1',
         '--extractor-retries',
@@ -1204,10 +1135,10 @@ class YtdlpService implements YtdlpToolService {
     final stderrBuffer = StringBuffer();
 
     final stdoutSub = process.stdout
-        .transform(utf8.decoder)
+        .transform(const Utf8Decoder(allowMalformed: true))
         .listen(stdoutBuffer.write);
     final stderrSub = process.stderr
-        .transform(utf8.decoder)
+        .transform(const Utf8Decoder(allowMalformed: true))
         .listen(stderrBuffer.write);
 
     int exitCode;
@@ -1325,6 +1256,21 @@ class YtdlpService implements YtdlpToolService {
     Function(String status)? onProgress,
   }) async {
     if (!_isInitialized) await initialize();
+    if (_extractorCachePath == null) await _ensureExtractorCacheAndPlugin();
+
+    final cacheKey =
+        '${_buildVideoInfoCacheKey(url)}|items=${playlistItems?.trim() ?? ''}';
+    final cached = _playlistCache.get(cacheKey);
+    if (cached != null) {
+      onProgress?.call('Using cached playlist metadata...');
+      return cached;
+    }
+
+    final existingInFlight = _playlistCache.getInFlight(cacheKey);
+    if (existingInFlight != null) {
+      onProgress?.call('Fetching playlist metadata...');
+      return existingInFlight;
+    }
 
     _playlistCancelRequested = false;
     onProgress?.call('Connecting...');
@@ -1345,7 +1291,7 @@ class YtdlpService implements YtdlpToolService {
       int? expectedCount;
 
       final stdoutFuture = process.stdout
-          .transform(systemEncoding.decoder)
+          .transform(const Utf8Decoder(allowMalformed: true))
           .transform(const LineSplitter())
           .listen((line) {
             if (line.trim().isEmpty) return;
@@ -1381,7 +1327,7 @@ class YtdlpService implements YtdlpToolService {
           .asFuture();
 
       final stderrFuture = process.stderr
-          .transform(const SystemEncoding().decoder)
+          .transform(const Utf8Decoder(allowMalformed: true))
           .listen((data) {
             stderrBuffer.write(data);
           })
@@ -1455,35 +1401,38 @@ class YtdlpService implements YtdlpToolService {
       return info;
     }
 
-    // Attempt 1: normal
-    try {
-      return await runWithArgs(
-        _buildPlaylistArgs(url, playlistItems: playlistItems),
-      );
-    } on YtdlpException catch (e) {
-      final msg = e.message;
-      final isVpn =
-          _isVpnNetworkError(msg) || msg.toLowerCase().contains('timed out');
-      final isCookie = _isCookieRelatedError(msg);
-      if (isVpn || isCookie) {
-        LoggingService().warning(
-          'Playlist fetch failed ($msg), retrying without cookies/VPN fallback',
-          component: 'YtdlpService',
+    return _playlistCache.trackInFlight(cacheKey, () async {
+      PlaylistInfo info;
+      // Attempt 1: normal
+      try {
+        info = await runWithArgs(
+          _buildPlaylistArgs(url, playlistItems: playlistItems),
         );
-        onProgress?.call('Retrying without browser cookies (VPN fallback)...');
-        try {
-          return await runWithArgs(
-            _buildPlaylistArgs(
-              url,
-              stripCookies: true,
-              playlistItems: playlistItems,
-            ),
+      } on YtdlpException catch (e) {
+        final msg = e.message;
+        final isVpn =
+            _isVpnNetworkError(msg) || msg.toLowerCase().contains('timed out');
+        final isCookie = _isCookieRelatedError(msg);
+        if (isVpn || isCookie) {
+          LoggingService().warning(
+            'Playlist fetch failed ($msg), retrying without cookies/VPN fallback',
+            component: 'YtdlpService',
           );
-        } catch (e2) {
-          if (_isVpnNetworkError(e2.toString())) {
-            onProgress?.call('Retrying with VPN-tolerant settings...');
-            try {
-              return await runWithArgs(
+          onProgress?.call(
+            'Retrying without browser cookies (VPN fallback)...',
+          );
+          try {
+            info = await runWithArgs(
+              _buildPlaylistArgs(
+                url,
+                stripCookies: true,
+                playlistItems: playlistItems,
+              ),
+            );
+          } catch (e2) {
+            if (_isVpnNetworkError(e2.toString())) {
+              onProgress?.call('Retrying with VPN-tolerant settings...');
+              info = await runWithArgs(
                 _buildPlaylistArgs(
                   url,
                   stripCookies: true,
@@ -1491,13 +1440,17 @@ class YtdlpService implements YtdlpToolService {
                   playlistItems: playlistItems,
                 ),
               );
-            } catch (_) {}
+            } else {
+              rethrow;
+            }
           }
+        } else {
           rethrow;
         }
       }
-      rethrow;
-    }
+      _playlistCache.put(cacheKey, info);
+      return info;
+    }());
   }
 
   /// yt-dlp `ytsearchN:query` flat-playlist search.
@@ -1698,6 +1651,8 @@ class YtdlpService implements YtdlpToolService {
     final args = <String>[
       '--newline',
       '--no-playlist',
+      if (_extractorCachePath != null) ...['--cache-dir', _extractorCachePath!],
+      if (_pluginDirPath != null) ...['--plugin-dirs', _pluginDirPath!],
       // Titles with | : * ? " < > \ break NTFS writes. yt-dlp replaces them
       // with underscores when this flag is set (e.g. "Axiom | Module_7").
       '--windows-filenames',
@@ -1794,6 +1749,17 @@ class YtdlpService implements YtdlpToolService {
     return null;
   }
 
+  static final RegExp _progressPercentRegex = RegExp(
+    r'\[download\]\s+(\d+(?:\.\d+)?)%',
+  );
+  static final RegExp _progressSpeedRegex = RegExp(
+    r'at\s+(\d+(?:\.\d+)?)\s*([KMG]?i?)B/s',
+    caseSensitive: false,
+  );
+  static final RegExp _progressEtaRegex = RegExp(
+    r'ETA\s+(?:(\d+):)?(\d+):(\d+)',
+  );
+
   /// Parse progress from yt-dlp output line.
   /// [audioOnly] disambiguates `.webm` destinations (Opus audio vs VP9 video).
   static DownloadProgress? parseProgress(
@@ -1838,9 +1804,7 @@ class YtdlpService implements YtdlpToolService {
       return DownloadProgress(progress: 1.0, eta: 0);
     }
 
-    final progressMatch = RegExp(
-      r'\[download\]\s+(\d+(?:\.\d+)?)%',
-    ).firstMatch(line);
+    final progressMatch = _progressPercentRegex.firstMatch(line);
 
     if (progressMatch == null) {
       if (lowerLine.contains('[merger]') ||
@@ -1862,11 +1826,8 @@ class YtdlpService implements YtdlpToolService {
     }
 
     final percent = double.parse(progressMatch.group(1)!) / 100;
-    final speedMatch = RegExp(
-      r'at\s+(\d+(?:\.\d+)?)\s*([KMG]?i?)B/s',
-      caseSensitive: false,
-    ).firstMatch(line);
-    final etaMatch = RegExp(r'ETA\s+(?:(\d+):)?(\d+):(\d+)').firstMatch(line);
+    final speedMatch = _progressSpeedRegex.firstMatch(line);
+    final etaMatch = _progressEtaRegex.firstMatch(line);
 
     double? speed;
     if (speedMatch != null) {

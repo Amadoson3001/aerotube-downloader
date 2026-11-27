@@ -60,7 +60,7 @@ object YtDlpEngine {
     private var ffmpegReady = false
 
     @Synchronized
-    fun ensureInit(context: Context) {
+    fun ensureYoutubeDL(context: Context) {
         val app = context.applicationContext
         appContext = app
         if (!youtubeDLInitialized) {
@@ -69,6 +69,11 @@ object YtDlpEngine {
             Log.d(TAG, "YoutubeDL initialized successfully")
         }
         ensureEjsCachePlugin(app)
+    }
+
+    @Synchronized
+    fun ensureInit(context: Context) {
+        ensureYoutubeDL(context)
         ensureFfmpeg()
     }
 
@@ -133,7 +138,7 @@ object YtDlpEngine {
 
     fun getVersion(context: Context): String? {
         return try {
-            ensureInit(context)
+            ensureYoutubeDL(context)
             YoutubeDL.getInstance().version(context.applicationContext)
         } catch (e: Throwable) {
             Log.e(TAG, "Failed to get version", e)
@@ -150,7 +155,7 @@ object YtDlpEngine {
     ): String {
         val startedAt = android.os.SystemClock.elapsedRealtime()
         return try {
-            ensureInit(context)
+            ensureYoutubeDL(context)
             if (requestId != null) {
                 if (cancelledInfoIds.remove(requestId)) {
                     return cancelledJson()
@@ -225,7 +230,7 @@ object YtDlpEngine {
         requestId: String? = null,
     ): String {
         return try {
-            ensureInit(context)
+            ensureYoutubeDL(context)
             if (requestId != null) {
                 if (cancelledInfoIds.remove(requestId)) {
                     return cancelledJson()
@@ -295,7 +300,7 @@ object YtDlpEngine {
         requestId: String? = null,
     ): String {
         return try {
-            ensureInit(context)
+            ensureYoutubeDL(context)
             if (requestId != null) {
                 if (cancelledInfoIds.remove(requestId)) {
                     return cancelledJson()
@@ -578,7 +583,7 @@ object YtDlpEngine {
         var lastNativeError: String? = null
 
         try {
-            ensureInit(app)
+            ensureYoutubeDL(app)
 
             val status = if (updateChannel == "nightly") {
                 YoutubeDL.getInstance().updateYoutubeDL(app, YoutubeDL.UpdateChannel.NIGHTLY)

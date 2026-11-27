@@ -87,6 +87,46 @@ class ErrorHelper {
         lower.contains('yt-dlp is out of date');
   }
 
+  /// Shared detector for VPN, DNS, socket, and timeout-class network errors.
+  static bool isVpnOrNetworkError(String msg) {
+    final l = msg.toLowerCase();
+    return l.contains('timed out') ||
+        l.contains('timeout') ||
+        l.contains('vpn') ||
+        l.contains('temporary failure in name resolution') ||
+        l.contains('unable to download webpage') ||
+        l.contains('unable to download json') ||
+        l.contains('unable to download api') ||
+        l.contains('connection timed out') ||
+        l.contains('operation timed out') ||
+        l.contains('socket timeout') ||
+        l.contains('read timed out') ||
+        l.contains('failed to resolve') ||
+        l.contains('getaddrinfo failed') ||
+        l.contains('name or service not known') ||
+        l.contains('name not known') ||
+        l.contains('network is unreachable') ||
+        l.contains('no address associated with hostname') ||
+        l.contains('failed host lookup') ||
+        l.contains('connection reset') ||
+        l.contains('connection refused') ||
+        l.contains('network is down') ||
+        l.contains('no route to host') ||
+        l.contains('socket') ||
+        l.contains('errno 110') ||
+        l.contains('errno -3') ||
+        (l.contains('ssl:') && l.contains('timeout'));
+  }
+
+  /// Appends a user-friendly VPN/timeout hint if not already present.
+  static String enrichVpnTimeoutMessage(
+    String cleaned, {
+    String prefix = 'Fetch timed out',
+  }) {
+    if (cleaned.toLowerCase().contains('vpn')) return cleaned;
+    return '$prefix - VPN may be slowing connection, try again or disable VPN. ($cleaned)';
+  }
+
   /// Strips out exception class name prefixes like "YtdlpException: ", "Exception: ", etc.
   static String clean(String raw) {
     var cleaned = raw.trim();

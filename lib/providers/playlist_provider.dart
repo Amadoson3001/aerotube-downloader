@@ -63,10 +63,7 @@ class PlaylistProvider extends ChangeNotifier {
     }
   }
 
-  bool _isVpnError(String m) {
-    final l = m.toLowerCase();
-    return l.contains('timed out') || l.contains('timeout') || l.contains('vpn') || l.contains('unable to download');
-  }
+  bool _isVpnError(String m) => ErrorHelper.isVpnOrNetworkError(m);
 
   /// Cancel in-flight playlist fetch (Windows & Android).
   Future<void> cancelFetch() async {
@@ -145,9 +142,7 @@ class PlaylistProvider extends ChangeNotifier {
       );
       var cleaned = ErrorHelper.clean(e.toString());
       if (e is TimeoutException || _isVpnError(cleaned)) {
-        if (!cleaned.toLowerCase().contains('vpn')) {
-          cleaned = 'Fetch timed out - VPN may be slowing connection, try again or disable VPN. ($cleaned)';
-        }
+        cleaned = ErrorHelper.enrichVpnTimeoutMessage(cleaned);
       }
       _error = cleaned;
     } finally {

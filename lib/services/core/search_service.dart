@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:youtube_explode_dart/youtube_explode_dart.dart'
     hide SearchResult;
+import '../../core/utils/error_helper.dart';
 import '../../models/search_video_result.dart';
 import 'logging_service.dart';
 
@@ -45,15 +46,8 @@ class SearchService {
   /// Default single overall deadline for a search request (explode + fallback).
   static const Duration defaultOverallBudget = Duration(seconds: 16);
 
-  bool _isTransientNetworkError(Object e) {
-    final m = e.toString().toLowerCase();
-    return m.contains('timeout') ||
-        m.contains('timed out') ||
-        m.contains('socket') ||
-        m.contains('connection') ||
-        m.contains('network is unreachable') ||
-        m.contains('failed host lookup');
-  }
+  bool _isTransientNetworkError(Object e) =>
+      ErrorHelper.isVpnOrNetworkError(e.toString());
 
   void resetPagination() {
     _requestToken++;

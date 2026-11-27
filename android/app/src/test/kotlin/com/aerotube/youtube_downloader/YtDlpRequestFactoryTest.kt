@@ -634,8 +634,9 @@ class YtDlpRequestFactoryTest {
         assertTrue(base.hasFlag("--force-ipv4"))
         assertTrue(base.hasFlag("--no-warnings"))
         assertFalse(base.hasOpt("--extractor-args"))
-        assertEquals("3", base.optValue("--retries"))
-        assertEquals("3", base.optValue("--extractor-retries"))
+        assertEquals("1", base.optValue("--retries"))
+        assertEquals("1", base.optValue("--extractor-retries"))
+        assertEquals("10", base.optValue("--socket-timeout"))
         assertTrue(base.hasFlag("--no-check-formats"))
         assertEquals("https://youtu.be/abc", base.url)
 
@@ -643,6 +644,9 @@ class YtDlpRequestFactoryTest {
             "https://youtu.be/abc", null, null, fallback = true
         )
         assertEquals("youtube:player_client=web,tv,mweb", fb.optValue("--extractor-args"))
+        assertEquals("3", fb.optValue("--retries"))
+        assertEquals("3", fb.optValue("--extractor-retries"))
+        assertEquals("15", fb.optValue("--socket-timeout"))
         assertFalse(
             fb.argv().any { it.contains("player_client=android") || it.contains("player_client=ios") }
         )
